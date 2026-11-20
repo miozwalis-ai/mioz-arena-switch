@@ -8,8 +8,8 @@
 #include <vector>
 
 // ============================================================
-// MIOZ ZOMBIE WORLD - Nintendo Switch  (v2.0)
-// Sticks corriges, sol vert a l'horizon, zombies ameliores
+// MIOZ ZOMBIE WORLD - Nintendo Switch (v3.0)
+// Sticks corriges, sol infini, zombies qui tombent, 10 coeurs
 // ============================================================
 
 static constexpr int SW = 1280;
@@ -23,24 +23,14 @@ static constexpr float NEAR_Z    = 0.18f;
 static constexpr float FOG_START = 55.0f;
 static constexpr float FOG_END   = 150.0f;
 
-// Brouillard VERT HERBE (avant : bleu du ciel = sol bleu au loin)
 static constexpr float FOG_R =  96.0f;
 static constexpr float FOG_G = 158.0f;
 static constexpr float FOG_B = 100.0f;
 
+static constexpr int MAX_HEARTS = 10;
+
 static constexpr unsigned STICK_LEFT  = 0;
 static constexpr unsigned STICK_RIGHT = 1;
-
-// ------------------------------------------------------------
-// REGLAGE DES STICKS
-// Tout est cense etre bon par defaut. Si chez toi une direction
-// va encore a l'envers, change juste le signe (1.0f -> -1.0f)
-// de la ligne correspondante, puis recompile.
-// ------------------------------------------------------------
-static constexpr float MOVE_X_SIGN = 1.0f;  // stick gauche X : + = droite
-static constexpr float MOVE_Z_SIGN = 1.0f;  // stick gauche Y : + = avancer
-static constexpr float CAM_X_SIGN  = 1.0f;  // stick droit  X : + = regarder a droite
-static constexpr float CAM_Y_SIGN  = 1.0f;  // stick droit  Y : + = regarder en haut
 
 // ------------------------------------------------------------
 // Structures
@@ -72,7 +62,10 @@ struct Zombie {
     Color skin {128,148,112,255};
     float cooldown = 0.0f;
     float wobble   = 0.0f;
+    float deathTimer = 0.0f;   // > 0 = en train de mourir
+    float deathTilt  = 0.0f;   // rotation de chute (radians)
     bool  alive    = true;
+    bool  dying    = false;
 };
 
 struct AmmoBox {
@@ -100,15 +93,12 @@ static inline V3 norm(V3 a) {
     return l > 1e-6f ? mul(a, 1.0f/l) : V3{0,1,0};
 }
 
-// Rotation "camera" : angle -yaw (meme convention que la vue)
 static inline V3 rotateY(V3 p, float c, float s) {
     return { p.x*c - p.z*s, p.y, p.x*s + p.z*c };
 }
 static inline V3 rotateY(V3 p, float angle) {
     return rotateY(p, cosf(angle), sinf(angle));
 }
-// Rotation inverse : angle +yaw (pour transformer une direction
-// du stick en direction dans le monde)
 static inline V3 rotateYInv(V3 p, float c, float s) {
     return { p.x*c + p.z*s, p.y, -p.x*s + p.z*c };
 }
@@ -179,9 +169,111 @@ static Mesh makeCylinder(float radius, float height, int seg = 10) {
 }
 
 static Mesh boxMesh    = makeBox(1,1,1);
-static Mesh sphereMesh = makeSphere(1, 7, 10);   // arbres
-static Mesh sphereLow  = makeSphere(1, 5, 8);    // tetes de zombies (moins lourd)
+static Mesh sphereMesh = makeSphere(1, 7, 10);
+static Mesh sphereLow  = makeSphere(1, 5, 8);
 static Mesh cylMesh    = makeCylinder(1,1);
+
+// ------------------------------------------------------------
+// Chiffres procéduraux 5x7
+// ------------------------------------------------------------
+static const uint8_t DIGITS[10][7] = {
+    {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E},
+    {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
+    {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F},
+    {0x1F,0x02,0x04,0x02,0x01,0x11,0x0E},
+    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02},
+    {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E},
+    {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E},
+    {0x1F,0x01,0x02,0x04,0x08,0x08,0x08},
+    {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E},
+    {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C},
+};
+
+static void drawDigit(SDL_Renderer* r, int digit, int x, int y,
+                      int px, Color c) {
+    SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
+    for (int row = 0; row < 7; row++) {
+        uint8_t bits = DIGITS[digit][row];
+        for (int col = 0; col < 5; col++) {
+            if (bits & (1 << (4 - col))) {
+                SDL_Rect rect { x + col*px, y + row*px, px, px };
+                SDL_RenderFillRect(r, &rect);
+            }
+        }
+    }
+}
+
+static void drawNumber(SDL_Renderer* r, int value, int x, int y,
+                       int px, Color c) {
+    if (value == 0) { drawDigit(r, 0, x, y, px, c); return; }
+    int digits[10];
+    int n = 0;
+    while (value > 0 && n < 10) {
+        digits[n++] = value % 10;
+        value /= 10;
+    }
+    for (int i = 0; i < n; i++) {
+        drawDigit(r, digits[n-1-i], x + i*(px*6), y, px, c);
+    }
+}
+
+// ------------------------------------------------------------
+// Dessin d'un coeur (deux cercles + triangle) plein
+// ------------------------------------------------------------
+static void drawHeart(SDL_Renderer* r, int cx, int cy, int size, Color c,
+                      bool filled) {
+    int half = size / 2;
+    int rr   = half / 2;
+
+    SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
+
+    if (filled) {
+        // Remplir lobe gauche
+        for (int dy = -rr; dy <= rr; dy++) {
+            for (int dx = -rr; dx <= rr; dx++) {
+                if (dx*dx + dy*dy <= rr*rr) {
+                    SDL_Rect px { cx - rr + dx, cy - rr/2 + dy, 1, 1 };
+                    SDL_RenderFillRect(r, &px);
+                }
+            }
+        }
+        // Remplir lobe droit
+        for (int dy = -rr; dy <= rr; dy++) {
+            for (int dx = -rr; dx <= rr; dx++) {
+                if (dx*dx + dy*dy <= rr*rr) {
+                    SDL_Rect px { cx + rr + dx, cy - rr/2 + dy, 1, 1 };
+                    SDL_RenderFillRect(r, &px);
+                }
+            }
+        }
+        // Triangle bas
+        for (int row = 0; row < half; row++) {
+            int w = half - row;
+            SDL_Rect line { cx - w, cy + row - 1, w*2, 1 };
+            SDL_RenderFillRect(r, &line);
+        }
+    } else {
+        // Coeur vide : juste un contour rouge sombre
+        Color dark { (Uint8)(c.r/2), (Uint8)(c.g/2), (Uint8)(c.b/2), c.a };
+        SDL_SetRenderDrawColor(r, dark.r, dark.g, dark.b, dark.a);
+        for (int dy = -rr; dy <= rr; dy++) {
+            for (int dx = -rr; dx <= rr; dx++) {
+                int d2 = dx*dx + dy*dy;
+                if (d2 <= rr*rr && d2 >= (rr-2)*(rr-2)) {
+                    SDL_Rect px { cx - rr + dx, cy - rr/2 + dy, 1, 1 };
+                    SDL_RenderFillRect(r, &px);
+                    SDL_Rect px2{ cx + rr + dx, cy - rr/2 + dy, 1, 1 };
+                    SDL_RenderFillRect(r, &px2);
+                }
+            }
+        }
+        for (int row = 0; row < half; row++) {
+            int w = half - row;
+            SDL_Rect line { cx - w, cy + row - 1, w*2, 1 };
+            SDL_RenderFillRect(r, &line);
+        }
+    }
+}
 // ============================================================
 // GAME
 // ============================================================
@@ -196,13 +288,14 @@ private:
     float yaw   = 0.0f;
     float pitch = 0.0f;
 
-    int   hits         = 0;
+    int   hearts       = MAX_HEARTS;
     int   score        = 0;
     int   level        = 1;
     int   kills        = 0;
-    int   ammo         = 60;
+    int   ammo         = 200;
     int   ballsPerKill = 5;
     int   shotPending  = 0;
+    float shootCooldown = 0.0f;
 
     float hurt        = 0.0f;
     float muzzleFlash = 0.0f;
@@ -254,20 +347,7 @@ private:
         zombies.clear();
         ammoBoxes.clear();
 
-        // Sol : herbe verte (visible jusque loin grace au fog vert)
-        addObj(&boxMesh, {0,-0.05f,0}, {1000,0.1f,1000}, {55,155,65,255});
-        addObj(&boxMesh, {0,-0.04f,0}, {180,0.06f,180},  {70,150,62,255});
-
-        // Touffes d'herbe pour le relief du sol
-        for (int i = 0; i < 48; i++) {
-            float x = (rand01()*2.0f-1.0f) * 92.0f;
-            float z = (rand01()*2.0f-1.0f) * 92.0f;
-            if (tooCloseToTree(x, z)) continue;
-            float s = 2.5f + rand01()*5.0f;
-            Uint8 gv = (Uint8)(115 + (int)(rand01()*45));
-            addObj(&boxMesh, {x, 0.03f, z}, {s, 0.05f, s},
-                   {42, gv, 48, 255}, rand01()*PI);
-        }
+        // ⚠️ Pas de sol en box : on utilise drawInfiniteGround()
 
         for (int i = 0; i < 34; i++) {
             float a = rand01() * 2.0f * PI;
@@ -304,7 +384,6 @@ private:
             float r = 18.0f + rand01() * 22.0f;
             p.x = player.x + sinf(worldA) * r;
             p.z = player.z + cosf(worldA) * r;
-
             if (fabsf(p.x) > MAP_LIMIT - 2) continue;
             if (fabsf(p.z) > MAP_LIMIT - 2) continue;
             if (tooCloseToTree(p.x, p.z)) continue;
@@ -312,19 +391,21 @@ private:
         }
         Zombie z;
         z.pos = p;
-        // Teinte de peau malade, differente pour chaque zombie
         Uint8 gv = (Uint8)(132 + (int)(rand01()*42));
         z.skin = { (Uint8)(gv-28), gv, (Uint8)(gv-38), 255 };
         z.cooldown = 0.0f;
         z.wobble = rand01()*6.28f;
         z.alive = true;
+        z.dying = false;
+        z.deathTimer = 0.0f;
+        z.deathTilt = 0.0f;
         zombies.push_back(z);
     }
 
     void respawn() {
         player = {0,0,0};
         yaw = 0.0f; pitch = 0.0f;
-        hits = 0; score = 0; kills = 0; ammo = 60;
+        hearts = MAX_HEARTS; score = 0; kills = 0; ammo = 200;
         level = 1; ballsPerKill = 5; shotPending = 0;
         hurt = 0.0f; timeAlive = 0.0f;
         dead = false; deadTimer = 0.0f;
@@ -362,34 +443,25 @@ private:
             for (int k = 0; k < 3; k++) {
                 V3 rel = sub(wp[k], camPos);
                 V3 cam = rotateY(rel, camCosYaw, camSinYaw);
-
                 float yy =  cam.y*camCosPitch - cam.z*camSinPitch;
                 float zz =  cam.y*camSinPitch + cam.z*camCosPitch;
                 float xx =  cam.x;
-
                 if (zz < NEAR_Z) { visible = false; break; }
-
                 float sx = SW*0.5f + xx * FOV_FOCAL / zz;
                 float sy = SH*0.5f - yy * FOV_FOCAL / zz;
-
                 if (sx < -2000 || sx > SW+2000 || sy < -2000 || sy > SH+2000) {
                     visible = false; break;
                 }
-
-                // Brouillard vert herbe : le sol reste vert au loin
                 float fog = std::clamp((zz - FOG_START) / (FOG_END - FOG_START),
                                        0.0f, 1.0f);
-
                 Uint8 cr = (Uint8)(o.color.r * lum * (1-fog) + FOG_R * fog);
                 Uint8 cg = (Uint8)(o.color.g * lum * (1-fog) + FOG_G * fog);
                 Uint8 cb = (Uint8)(o.color.b * lum * (1-fog) + FOG_B * fog);
-
                 verts3[k].position  = { sx, sy };
                 verts3[k].tex_coord = { 0, 0 };
                 verts3[k].color     = { cr, cg, cb, o.color.a };
                 depth += zz;
             }
-
             if (visible) {
                 tris.push_back({
                     { verts3[0], verts3[1], verts3[2] },
@@ -398,211 +470,257 @@ private:
             }
         }
     }
+
     // --------------------------------------------------------
-    // Zombie "de face" : jambes, torse, bras tendus, yeux,
-    // pupilles, bouche. Il te regarde en marchant.
+    // Sol infini : grand plan qui suit la caméra (aucune bordure)
     // --------------------------------------------------------
-    void drawZombie(const Zombie& z) {
-        const float bob  = sinf(z.wobble) * 0.06f;
-        const float sway = sinf(z.wobble) * 0.10f;
+    void drawInfiniteGround() {
+        const float S = 500.0f;
+        const V3 camPos = { player.x, 1.55f, player.z };
 
-        V3 toP = sub(player, z.pos);
-        const float lyaw = atan2f(toP.x, toP.z);
-        const V3 fwd = { sinf(lyaw), 0, cosf(lyaw) };
-        const V3 rgt = { cosf(lyaw), 0, -sinf(lyaw) };
+        V3 corners[4] = {
+            { player.x - S, 0, player.z - S },
+            { player.x + S, 0, player.z - S },
+            { player.x + S, 0, player.z + S },
+            { player.x - S, 0, player.z + S },
+        };
 
-        const Color& skin = z.skin;
+        SDL_Vertex sv[4];
+        for (int k = 0; k < 4; k++) {
+            V3 rel = sub(corners[k], camPos);
+            V3 cam = rotateY(rel, camCosYaw, camSinYaw);
+            float yy =  cam.y*camCosPitch - cam.z*camSinPitch;
+            float zz =  cam.y*camSinPitch + cam.z*camCosPitch;
+            float xx =  cam.x;
+            if (zz < NEAR_Z) zz = NEAR_Z;
+            float sx = SW*0.5f + xx * FOV_FOCAL / zz;
+            float sy = SH*0.5f - yy * FOV_FOCAL / zz;
+            sv[k].position  = { sx, sy };
+            sv[k].tex_coord = { 0, 0 };
+            sv[k].color     = { 55, 155, 65, 255 };
+        }
 
-        // Jambes
-        Object legL { &boxMesh,
-            add(add(z.pos, mul(rgt, -0.22f)), {0, 0.40f + bob*0.5f, 0}),
-            {0.26f, 0.78f, 0.30f}, lyaw, {58, 64, 74, 255} };
-        Object legR { &boxMesh,
-            add(add(z.pos, mul(rgt,  0.22f)), {0, 0.40f + bob*0.5f, 0}),
-            {0.26f, 0.78f, 0.30f}, lyaw, {58, 64, 74, 255} };
+        SDL_Vertex verts2[6] = { sv[0], sv[1], sv[2], sv[0], sv[2], sv[3] };
+        int idx[6] = {0,1,2, 0,2,3};
+        SDL_RenderGeometry(ren, nullptr, verts2, 6, idx, 6);
+}
+void drawZombie(const Zombie& z) {
+    const float bob  = sinf(z.wobble) * 0.06f;
+    const float sway = sinf(z.wobble) * 0.10f;
 
-        // Torse
-        Object torso { &boxMesh, {z.pos.x, 1.08f + bob, z.pos.z},
-            {0.88f, 1.05f, 0.52f}, lyaw, {74, 80, 88, 255} };
-
-        // Bras tendus vers le joueur, qui se balancent
-        Object armL { &boxMesh,
-            add(add(z.pos, mul(rgt, -0.55f)),
-                add(mul(fwd, 0.55f), {0, 1.38f + bob, 0})),
-            {0.20f, 0.20f, 1.15f}, lyaw + sway, skin };
-        Object armR { &boxMesh,
-            add(add(z.pos, mul(rgt,  0.55f)),
-                add(mul(fwd, 0.55f), {0, 1.38f + bob, 0})),
-            {0.20f, 0.20f, 1.15f}, lyaw - sway, skin };
-
-        // Tete
-        Object head { &sphereLow, {z.pos.x, 1.98f + bob, z.pos.z},
-            {0.70f, 0.74f, 0.70f}, 0, skin };
-
-        // Visage
-        V3 faceBase = add(z.pos, mul(fwd, 0.60f));
-        faceBase.y = 2.02f + bob;
-
-        Object eyeL { &boxMesh, add(faceBase, mul(rgt, -0.20f)),
-            {0.17f, 0.19f, 0.10f}, lyaw, {238, 238, 225, 255} };
-        Object eyeR { &boxMesh, add(faceBase, mul(rgt,  0.20f)),
-            {0.17f, 0.19f, 0.10f}, lyaw, {238, 238, 225, 255} };
-        Object pupL { &boxMesh,
-            add(add(faceBase, mul(rgt, -0.20f)), mul(fwd, 0.07f)),
-            {0.08f, 0.10f, 0.06f}, lyaw, {20, 20, 25, 255} };
-        Object pupR { &boxMesh,
-            add(add(faceBase, mul(rgt,  0.20f)), mul(fwd, 0.07f)),
-            {0.08f, 0.10f, 0.06f}, lyaw, {20, 20, 25, 255} };
-
-        V3 mouthPos = add(z.pos, mul(fwd, 0.58f));
-        mouthPos.y = 1.80f + bob;
-        Object mouth { &boxMesh, mouthPos,
-            {0.30f, 0.10f, 0.08f}, lyaw, {45, 28, 28, 255} };
-
-        addMeshTriangles(legL);
-        addMeshTriangles(legR);
-        addMeshTriangles(torso);
-        addMeshTriangles(armL);
-        addMeshTriangles(armR);
-        addMeshTriangles(head);
-        addMeshTriangles(eyeL);
-        addMeshTriangles(eyeR);
-        addMeshTriangles(pupL);
-        addMeshTriangles(pupR);
-        addMeshTriangles(mouth);
+    // Si en train de mourir : chute
+    float fallTilt = z.deathTilt;    // radians
+    float fallDropY = 0.0f;
+    if (z.dying) {
+        fallDropY = std::min(1.4f, z.deathTilt * 0.9f);
     }
 
-    void drawAmmoBox(const AmmoBox& b) {
-        if (b.taken) return;
-        Object o { &boxMesh, b.pos, {0.9f, 0.5f, 0.9f}, 0,
-                   {220, 200, 60, 255} };
-        addMeshTriangles(o);
-        Object lid { &boxMesh, {b.pos.x, b.pos.y+0.28f, b.pos.z},
-                     {0.95f, 0.08f, 0.95f}, 0, {255, 240, 120, 255} };
-        addMeshTriangles(lid);
+    V3 toP = sub(player, z.pos);
+    const float lyaw = atan2f(toP.x, toP.z);
+    const V3 fwd = { sinf(lyaw), 0, cosf(lyaw) };
+    const V3 rgt = { cosf(lyaw), 0, -sinf(lyaw) };
+
+    const Color& skin = z.skin;
+
+    float bodyY = -fallDropY;
+    float rotBody = fallTilt;
+
+    // Jambes
+    Object legL { &boxMesh,
+        add(add(z.pos, mul(rgt, -0.22f)), {0, 0.40f + bob*0.5f + bodyY, 0}),
+        {0.26f, 0.78f, 0.30f}, lyaw + rotBody, {58, 64, 74, 255} };
+    Object legR { &boxMesh,
+        add(add(z.pos, mul(rgt,  0.22f)), {0, 0.40f + bob*0.5f + bodyY, 0}),
+        {0.26f, 0.78f, 0.30f}, lyaw + rotBody, {58, 64, 74, 255} };
+
+    // Torse
+    Object torso { &boxMesh,
+        {z.pos.x, 1.08f + bob + bodyY, z.pos.z},
+        {0.88f, 1.05f, 0.52f}, lyaw + rotBody, {74, 80, 88, 255} };
+
+    // Bras
+    Object armL { &boxMesh,
+        add(add(z.pos, mul(rgt, -0.55f)),
+            add(mul(fwd, 0.55f), {0, 1.38f + bob + bodyY, 0})),
+        {0.20f, 0.20f, 1.15f}, lyaw + sway + rotBody, skin };
+    Object armR { &boxMesh,
+        add(add(z.pos, mul(rgt,  0.55f)),
+            add(mul(fwd, 0.55f), {0, 1.38f + bob + bodyY, 0})),
+        {0.20f, 0.20f, 1.15f}, lyaw - sway + rotBody, skin };
+
+    // Tête
+    Object head { &sphereLow,
+        {z.pos.x, 1.98f + bob + bodyY, z.pos.z},
+        {0.70f, 0.74f, 0.70f}, rotBody, skin };
+
+    // Visage
+    V3 faceBase = add(z.pos, mul(fwd, 0.60f));
+    faceBase.y = 2.02f + bob + bodyY;
+
+    Object eyeL { &boxMesh, add(faceBase, mul(rgt, -0.20f)),
+        {0.17f, 0.19f, 0.10f}, lyaw + rotBody, {238, 238, 225, 255} };
+    Object eyeR { &boxMesh, add(faceBase, mul(rgt,  0.20f)),
+        {0.17f, 0.19f, 0.10f}, lyaw + rotBody, {238, 238, 225, 255} };
+    Object pupL { &boxMesh,
+        add(add(faceBase, mul(rgt, -0.20f)), mul(fwd, 0.07f)),
+        {0.08f, 0.10f, 0.06f}, lyaw + rotBody, {20, 20, 25, 255} };
+    Object pupR { &boxMesh,
+        add(add(faceBase, mul(rgt,  0.20f)), mul(fwd, 0.07f)),
+        {0.08f, 0.10f, 0.06f}, lyaw + rotBody, {20, 20, 25, 255} };
+
+    V3 mouthPos = add(z.pos, mul(fwd, 0.58f));
+    mouthPos.y = 1.80f + bob + bodyY;
+    Object mouth { &boxMesh, mouthPos,
+        {0.30f, 0.10f, 0.08f}, lyaw + rotBody, {45, 28, 28, 255} };
+
+    addMeshTriangles(legL);
+    addMeshTriangles(legR);
+    addMeshTriangles(torso);
+    addMeshTriangles(armL);
+    addMeshTriangles(armR);
+    addMeshTriangles(head);
+    addMeshTriangles(eyeL);
+    addMeshTriangles(eyeR);
+    addMeshTriangles(pupL);
+    addMeshTriangles(pupR);
+    addMeshTriangles(mouth);
+}
+
+void drawAmmoBox(const AmmoBox& b) {
+    if (b.taken) return;
+    Object o { &boxMesh, b.pos, {0.9f, 0.5f, 0.9f}, 0,
+               {220, 200, 60, 255} };
+    addMeshTriangles(o);
+    Object lid { &boxMesh, {b.pos.x, b.pos.y+0.28f, b.pos.z},
+                 {0.95f, 0.08f, 0.95f}, 0, {255, 240, 120, 255} };
+    addMeshTriangles(lid);
+}
+
+void drawSky() {
+    const int bands = 24;
+    for (int i = 0; i < bands; i++) {
+        float t = (float)i / bands;
+        Uint8 r = (Uint8)( 90 + 40 * t);
+        Uint8 g = (Uint8)(150 + 50 * t);
+        Uint8 b = (Uint8)(220 + 25 * t);
+        float m = std::clamp((t - 0.72f) / 0.28f, 0.0f, 1.0f) * 0.8f;
+        r = (Uint8)(r * (1-m) + FOG_R * m);
+        g = (Uint8)(g * (1-m) + FOG_G * m);
+        b = (Uint8)(b * (1-m) + FOG_B * m);
+        SDL_SetRenderDrawColor(ren, r, g, b, 255);
+        SDL_Rect band { 0, (int)(t * SH), SW, SH / bands + 1 };
+        SDL_RenderFillRect(ren, &band);
+    }
+}
+
+void drawWorld() {
+    camCosYaw   = cosf(yaw);
+    camSinYaw   = sinf(yaw);
+    camCosPitch = cosf(pitch);
+    camSinPitch = sinf(pitch);
+
+    drawSky();
+    drawInfiniteGround();
+
+    tris.clear();
+    tris.reserve(12000);
+
+    for (const auto& o : objects)   addMeshTriangles(o);
+    for (const auto& z : zombies)   if (z.alive || z.dying) drawZombie(z);
+    for (const auto& b : ammoBoxes) drawAmmoBox(b);
+
+    std::sort(tris.begin(), tris.end(),
+        [](const Tri& a, const Tri& b) { return a.depth > b.depth; });
+
+    verts.clear();
+    indices.clear();
+    verts.reserve(tris.size()*3);
+    indices.reserve(tris.size()*3);
+
+    for (const auto& t : tris) {
+        int base = (int)verts.size();
+        for (auto& v : t.v) verts.push_back(v);
+        indices.push_back(base);
+        indices.push_back(base+1);
+        indices.push_back(base+2);
     }
 
-    // Ciel avec horizon qui fond vers le vert du brouillard
-    void drawSky() {
-        const int bands = 24;
-        for (int i = 0; i < bands; i++) {
-            float t = (float)i / bands;
-            Uint8 r = (Uint8)( 90 + 40 * t);
-            Uint8 g = (Uint8)(150 + 50 * t);
-            Uint8 b = (Uint8)(220 + 25 * t);
+    if (!verts.empty()) {
+        SDL_RenderGeometry(ren, nullptr,
+            verts.data(),   (int)verts.size(),
+            indices.data(), (int)indices.size());
+    }
+}
 
-            float m = std::clamp((t - 0.72f) / 0.28f, 0.0f, 1.0f) * 0.8f;
-            r = (Uint8)(r * (1-m) + FOG_R * m);
-            g = (Uint8)(g * (1-m) + FOG_G * m);
-            b = (Uint8)(b * (1-m) + FOG_B * m);
+void drawHud() {
+    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
 
-            SDL_SetRenderDrawColor(ren, r, g, b, 255);
-            SDL_Rect band { 0, (int)(t * SH), SW, SH / bands + 1 };
-            SDL_RenderFillRect(ren, &band);
-        }
+    // --- 10 coeurs en forme de coeur
+    for (int i = 0; i < MAX_HEARTS; i++) {
+        int cx = 40 + i * 40;
+        int cy = 40;
+        int size = 30;
+        bool filled = (i < hearts);
+        Color c = filled ? Color{230, 40, 60, 255}
+                         : Color{60, 30, 40, 180};
+        drawHeart(ren, cx, cy, size, c, filled);
     }
 
-    void drawWorld() {
-        camCosYaw   = cosf(yaw);
-        camSinYaw   = sinf(yaw);
-        camCosPitch = cosf(pitch);
-        camSinPitch = sinf(pitch);
+    // --- Score
+    SDL_SetRenderDrawColor(ren, 20, 20, 20, 160);
+    SDL_Rect sbox { SW - 240, 20, 220, 50 };
+    SDL_RenderFillRect(ren, &sbox);
+    drawNumber(ren, score, SW - 220, 28, 4, {255, 240, 100, 255});
 
-        tris.clear();
-        tris.reserve(12000);
+    // --- Ammo
+    SDL_SetRenderDrawColor(ren, 20, 20, 20, 160);
+    SDL_Rect abox { SW - 240, 80, 220, 38 };
+    SDL_RenderFillRect(ren, &abox);
+    drawNumber(ren, ammo, SW - 220, 86, 3, {120, 220, 255, 255});
 
-        for (const auto& o : objects)   addMeshTriangles(o);
-        for (const auto& z : zombies)   if (z.alive) drawZombie(z);
-        for (const auto& b : ammoBoxes) drawAmmoBox(b);
+    // --- Niveau
+    SDL_SetRenderDrawColor(ren, 20, 20, 20, 160);
+    SDL_Rect lbox { SW - 240, 128, 220, 38 };
+    SDL_RenderFillRect(ren, &lbox);
+    drawDigit(ren, level % 10, SW - 220, 134, 3, {255, 120, 200, 255});
 
-        std::sort(tris.begin(), tris.end(),
-            [](const Tri& a, const Tri& b) { return a.depth > b.depth; });
+    // --- Crosshair
+    SDL_SetRenderDrawColor(ren, 255, 255, 255, 230);
+    SDL_RenderDrawLine(ren, SW/2-10, SH/2, SW/2+10, SH/2);
+    SDL_RenderDrawLine(ren, SW/2, SH/2-10, SW/2, SH/2+10);
 
-        drawSky();
-
-        verts.clear();
-        indices.clear();
-        verts.reserve(tris.size()*3);
-        indices.reserve(tris.size()*3);
-
-        for (const auto& t : tris) {
-            int base = (int)verts.size();
-            for (auto& v : t.v) verts.push_back(v);
-            indices.push_back(base);
-            indices.push_back(base+1);
-            indices.push_back(base+2);
-        }
-
-        if (!verts.empty()) {
-            SDL_RenderGeometry(ren, nullptr,
-                verts.data(),   (int)verts.size(),
-                indices.data(), (int)indices.size());
-        }
+    if (muzzleFlash > 0.0f) {
+        SDL_SetRenderDrawColor(ren, 255, 240, 150,
+            (Uint8)(muzzleFlash * 200));
+        SDL_Rect flash { SW/2-18, SH/2-18, 36, 36 };
+        SDL_RenderFillRect(ren, &flash);
     }
 
-    void drawHud() {
-        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+    if (hurt > 0.0f) {
+        SDL_SetRenderDrawColor(ren, 180, 0, 0, (Uint8)(hurt*115.0f));
+        SDL_Rect r {0,0,SW,SH};
+        SDL_RenderFillRect(ren, &r);
+    }
 
-        for (int i = 0; i < 3; i++) {
-            SDL_Rect r { 28 + i*42, 26, 30, 24 };
-            SDL_SetRenderDrawColor(ren,
-                (i < hits) ? 65 : 220,
-                (i < hits) ? 65 : 35,
-                (i < hits) ? 65 : 45,
-                255);
-            SDL_RenderFillRect(ren, &r);
-        }
-
-        SDL_SetRenderDrawColor(ren, 30, 30, 30, 200);
-        SDL_Rect lbBg { 28, 62, 220, 18 };
-        SDL_RenderFillRect(ren, &lbBg);
-
-        float prog = (kills % 5) / 5.0f;
-        SDL_SetRenderDrawColor(ren, 80, 200, 255, 255);
-        SDL_Rect lb { 30, 64, (int)(216 * prog), 14 };
-        SDL_RenderFillRect(ren, &lb);
-
-        int barW = std::min(400, ammo * 4);
-        SDL_SetRenderDrawColor(ren, 255, 220, 60, 220);
-        SDL_Rect tb { SW - 30 - barW, 26, barW, 12 };
-        SDL_RenderFillRect(ren, &tb);
-
-        SDL_SetRenderDrawColor(ren, 255, 255, 255, 230);
-        SDL_RenderDrawLine(ren, SW/2-10, SH/2, SW/2+10, SH/2);
-        SDL_RenderDrawLine(ren, SW/2, SH/2-10, SW/2, SH/2+10);
-
-        if (muzzleFlash > 0.0f) {
-            SDL_SetRenderDrawColor(ren, 255, 240, 150,
-                (Uint8)(muzzleFlash * 200));
-            SDL_Rect flash { SW/2-18, SH/2-18, 36, 36 };
-            SDL_RenderFillRect(ren, &flash);
-        }
-
-        if (hurt > 0.0f) {
-            SDL_SetRenderDrawColor(ren, 180, 0, 0, (Uint8)(hurt*115.0f));
-            SDL_Rect r {0,0,SW,SH};
-            SDL_RenderFillRect(ren, &r);
-        }
-
-        if (title || dead || paused) {
-            SDL_SetRenderDrawColor(ren, 0, 0, 0, 175);
-            SDL_Rect panel { SW/2-300, SH/2-100, 600, 200 };
-            SDL_RenderFillRect(ren, &panel);
-
-            SDL_SetRenderDrawColor(ren, 255, 255, 255, 255);
-            SDL_Rect bar { SW/2-170, SH/2+40, 340, 24 };
-            SDL_RenderFillRect(ren, &bar);
-
-            SDL_SetRenderDrawColor(ren, 40, 130, 50, 255);
-            SDL_Rect inner { SW/2-165, SH/2+45, 330, 14 };
-            SDL_RenderFillRect(ren, &inner);
-        }
+    if (title || dead || paused) {
+        SDL_SetRenderDrawColor(ren, 0, 0, 0, 175);
+        SDL_Rect panel { SW/2-300, SH/2-100, 600, 200 };
+        SDL_RenderFillRect(ren, &panel);
+        SDL_SetRenderDrawColor(ren, 255, 255, 255, 255);
+        SDL_Rect bar { SW/2-170, SH/2+40, 340, 24 };
+        SDL_RenderFillRect(ren, &bar);
+        SDL_SetRenderDrawColor(ren, 40, 130, 50, 255);
+        SDL_Rect inner { SW/2-165, SH/2+45, 330, 14 };
+        SDL_RenderFillRect(ren, &inner);
+    }
 }
     // --------------------------------------------------------
     void fireShot() {
         if (ammo <= 0) return;
+        if (shootCooldown > 0.0f) return;
         ammo--;
         muzzleFlash = 0.15f;
+        shootCooldown = 0.15f;
 
         V3 dir = {
             sinf(yaw) * cosf(pitch),
@@ -616,7 +734,7 @@ private:
         float bestDot = 0.985f;
 
         for (auto& z : zombies) {
-            if (!z.alive) continue;
+            if (!z.alive || z.dying) continue;
             V3 toZ = {
                 z.pos.x - camPos.x,
                 (z.pos.y + 1.0f) - camPos.y,
@@ -636,7 +754,9 @@ private:
             shotPending++;
             if (shotPending >= ballsPerKill) {
                 shotPending = 0;
-                best->alive = false;
+                // Démarre l'animation de mort
+                best->dying = true;
+                best->deathTimer = 1.2f;
                 kills++;
                 score += 100;
 
@@ -652,8 +772,9 @@ private:
 
     // --------------------------------------------------------
     void update(float dt, u64 kDown, u64 kHeld) {
-        if (hurt > 0.0f)        hurt        = std::max(0.0f, hurt - dt);
-        if (muzzleFlash > 0.0f) muzzleFlash = std::max(0.0f, muzzleFlash - dt);
+        if (hurt > 0.0f)         hurt         = std::max(0.0f, hurt - dt);
+        if (muzzleFlash > 0.0f)  muzzleFlash  = std::max(0.0f, muzzleFlash - dt);
+        if (shootCooldown > 0.0f) shootCooldown = std::max(0.0f, shootCooldown - dt);
 
         if (title) {
             if (kDown & HidNpadButton_A) title = false;
@@ -677,11 +798,9 @@ private:
         HidAnalogStickState left  = padGetStickPos(&pad, STICK_LEFT);
         HidAnalogStickState right = padGetStickPos(&pad, STICK_RIGHT);
 
-        // Stick gauche : deplacement
-        // (sur Switch, le stick "haut" donne une valeur Y negative,
-        //  d'ou le "-" devant left.y)
-        float mx =  left.x / 32767.0f * MOVE_X_SIGN;
-        float mz = -left.y / 32767.0f * MOVE_Z_SIGN;   // haut = avancer
+        // ✅ STICK GAUCHE CORRIGÉ : haut = avancer, sans signe -
+        float mx = left.x / 32767.0f;
+        float mz = left.y / 32767.0f;   // haut = avancer
 
         if (kHeld & HidNpadButton_Left)  mx -= 1.0f;
         if (kHeld & HidNpadButton_Right) mx += 1.0f;
@@ -691,24 +810,23 @@ private:
         float len = sqrtf(mx*mx + mz*mz);
         if (len > 1.0f) { mx /= len; mz /= len; }
 
-        // CORRECTION IMPORTANTE : on utilise rotateYInv (angle +yaw),
-        // pas rotateY. Avant, le deplacement tournait dans le mauvais
-        // sens par rapport a la camera -> "j'avance et il va sur le cote".
         V3 move = rotateYInv({ mx*7.0f*dt, 0, mz*7.0f*dt },
                              cosf(yaw), sinf(yaw));
         player.x = std::clamp(player.x + move.x, -MAP_LIMIT, MAP_LIMIT);
         player.z = std::clamp(player.z + move.z, -MAP_LIMIT, MAP_LIMIT);
 
-        // Stick droit : camera
-        yaw   += right.x / 32767.0f * CAM_X_SIGN * 2.4f * dt;
+        // ✅ STICK DROIT CORRIGÉ : droite = regarder à droite
+        yaw   += right.x / 32767.0f * 2.4f * dt;
         pitch  = std::clamp(
-            pitch + right.y / 32767.0f * CAM_Y_SIGN * 2.0f * dt,
+            pitch - right.y / 32767.0f * 2.0f * dt,
             -1.48f, 1.48f);
 
-        if ((kDown & HidNpadButton_ZR) || (kDown & HidNpadButton_A)) {
+        // Tir (ZR ou A)
+        if ((kHeld & HidNpadButton_ZR) || (kHeld & HidNpadButton_A)) {
             fireShot();
         }
 
+        // Ramassage munitions
         for (auto& b : ammoBoxes) {
             if (b.taken) continue;
             float dx = b.pos.x - player.x;
@@ -719,11 +837,11 @@ private:
             }
         }
 
+        // Vagues
         static float spawnCooldown = 0.0f;
         spawnCooldown -= dt;
         int targetCount = 8 + (int)(timeAlive / 6.0f);
         if (targetCount > 40) targetCount = 40;
-
         int aliveCount = 0;
         for (auto& z : zombies) if (z.alive) aliveCount++;
 
@@ -735,13 +853,23 @@ private:
         if (zombies.size() > 60) {
             zombies.erase(
                 std::remove_if(zombies.begin(), zombies.end(),
-                    [](const Zombie& z){ return !z.alive; }),
+                    [](const Zombie& z){ return !z.alive && !z.dying; }),
                 zombies.end());
         }
 
         float speedMul = 1.0f + std::min(1.5f, timeAlive / 60.0f);
 
+        // Mise à jour zombies + animation de mort
         for (auto& z : zombies) {
+            if (z.dying) {
+                z.deathTimer -= dt;
+                z.deathTilt = std::min(1.5708f, z.deathTilt + dt * 6.0f);
+                if (z.deathTimer <= 0.0f) {
+                    z.dying = false;
+                    z.alive = false;
+                }
+                continue;
+            }
             if (!z.alive) continue;
 
             z.wobble += dt * 8.0f;
@@ -751,7 +879,7 @@ private:
 
             V3 push{0,0,0};
             for (auto& o : zombies) {
-                if (&o == &z || !o.alive) continue;
+                if (&o == &z || !o.alive || o.dying) continue;
                 V3 dd = sub(z.pos, o.pos);
                 float d2 = dd.x*dd.x + dd.z*dd.z;
                 if (d2 < 1.2f*1.2f && d2 > 1e-4f) {
@@ -764,16 +892,15 @@ private:
                 float spd = 2.25f * speedMul;
                 z.pos.x += (d.x / dist * spd + push.x) * dt;
                 z.pos.z += (d.z / dist * spd + push.z) * dt;
-
                 z.pos.x = std::clamp(z.pos.x, -MAP_LIMIT, MAP_LIMIT);
                 z.pos.z = std::clamp(z.pos.z, -MAP_LIMIT, MAP_LIMIT);
             } else {
                 z.cooldown -= dt;
                 if (z.cooldown <= 0.0f) {
-                    hits++;
+                    hearts--;
                     hurt = 0.65f;
                     z.cooldown = 1.25f;
-                    if (hits >= 3) { dead = true; deadTimer = 2.0f; }
+                    if (hearts <= 0) { dead = true; deadTimer = 2.0f; }
                 }
             }
         }
@@ -802,7 +929,7 @@ public:
 
         buildWorld();
 
-        printf("MIOZ ZOMBIE WORLD v2.0\n");
+        printf("MIOZ ZOMBIE WORLD v3.0\n");
         printf("Stick gauche: bouger | Stick droit: camera\n");
         printf("A / ZR: tirer | PLUS: pause | MINUS: recommencer\n");
         return true;
@@ -849,5 +976,4 @@ int main(int argc, char** argv) {
     if (game.init()) game.run();
     return 0;
 }
-
 
