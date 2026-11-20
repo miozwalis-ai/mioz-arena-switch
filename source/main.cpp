@@ -8,7 +8,8 @@
 #include <vector>
 
 // ============================================================
-// MIOZ ZOMBIE WORLD - v3 (pistolet + vagues + munitions)
+// MIOZ ZOMBIE WORLD - Nintendo Switch
+// Fichier autonome : aucune ressource externe
 // ============================================================
 
 static constexpr int SW = 1280;
@@ -157,7 +158,6 @@ static Mesh makeCylinder(float radius, float height, int seg = 10) {
 static Mesh boxMesh    = makeBox(1,1,1);
 static Mesh sphereMesh = makeSphere(1);
 static Mesh cylMesh    = makeCylinder(1,1);
-
 // ============================================================
 // GAME
 // ============================================================
@@ -172,17 +172,16 @@ private:
     float yaw   = 0.0f;
     float pitch = 0.0f;
 
-    // --- Combat / progression
-    int   hits        = 0;
-    int   score       = 0;
-    int   level       = 1;
-    int   kills       = 0;
-    int   ammo        = 60;
-    int   ballsPerKill = 5;      // 5 → 3 → 1
+    int   hits         = 0;
+    int   score        = 0;
+    int   level        = 1;
+    int   kills        = 0;
+    int   ammo         = 60;
+    int   ballsPerKill = 5;
+    int   shotPending  = 0;
+
     float hurt        = 0.0f;
     float muzzleFlash = 0.0f;
-    float shakeTimer  = 0.0f;
-    float shakeAmount = 0.0f;
 
     float deadTimer = 0.0f;
     float timeAlive = 0.0f;
@@ -231,11 +230,9 @@ private:
         zombies.clear();
         ammoBoxes.clear();
 
-        // Sol immense
         addObj(&boxMesh, {0,-0.05f,0}, {1000,0.1f,1000}, {55,155,65,255});
         addObj(&boxMesh, {0,-0.04f,0}, {180,0.06f,180},  {70,145,60,255});
 
-        // Arbres + caisses de munitions près de certains arbres
         for (int i = 0; i < 34; i++) {
             float a = rand01() * 2.0f * PI;
             float r = 22.0f + rand01() * 63.0f;
@@ -249,7 +246,6 @@ private:
             addObj(&sphereMesh, {x,3.55f,z}, {3.4f,3.5f,3.4f},   {40,v1,48,255});
             addObj(&sphereMesh, {x+0.8f,3.9f,z-0.3f}, {2.2f,2.4f,2.2f}, {48,v2,53,255});
 
-            // 1 chance sur 3 d'avoir une caisse près de l'arbre
             if (rand01() < 0.33f) {
                 float ox = x + (rand01()*2.0f-1.0f)*2.2f;
                 float oz = z + (rand01()*2.0f-1.0f)*2.2f;
@@ -260,17 +256,13 @@ private:
         spawnInitialZombies(8);
     }
 
-    // Spawn des zombies DERRIÈRE le joueur (hors champ)
     void spawnInitialZombies(int n) {
-        for (int i = 0; i < n; i++) {
-            spawnOneZombieBehindPlayer();
-        }
+        for (int i = 0; i < n; i++) spawnOneZombieBehindPlayer();
     }
 
     void spawnOneZombieBehindPlayer() {
-        V3 p{};
+        V3 p{0,0,0};
         for (int tries = 0; tries < 40; tries++) {
-            // Angle par rapport au joueur : entre 100° et 260° (derrière)
             float behind = PI + (rand01() - 0.5f) * 2.6f;
             float worldA = yaw + behind;
             float r = 18.0f + rand01() * 22.0f;
@@ -282,85 +274,91 @@ private:
             if (tooCloseToTree(p.x, p.z)) continue;
             break;
         }
-        zombies.push_back({ p, 0.0f, rand01()*6.28f, true });
+        Zombie z;
+        z.pos = p;
+        z.cooldown = 0.0f;
+        z.wobble = rand01()*6.28f;
+        z.alive = true;
+        zombies.push_back(z);
     }
 
     void respawn() {
         player = {0,0,0};
         yaw = 0.0f; pitch = 0.0f;
         hits = 0; score = 0; kills = 0; ammo = 60;
-        level = 1; ballsPerKill = 5;
+        level = 1; ballsPerKill = 5; shotPending = 0;
         hurt = 0.0f; timeAlive = 0.0f;
         dead = false; deadTimer = 0.0f;
         zombies.clear();
         for (auto& b : ammoBoxes) b.taken = false;
         spawnInitialZombies(8);
-}// --------------------------------------------------------
-void addMeshTriangles(const Object& o) {
-    const V3 camPos = { player.x, 1.55f, player.z };
-    const float fogR = 111, fogG = 177, fogB = 225;
+    }
 
-    for (size_t i = 0; i + 2 < o.mesh->idx.size(); i += 3) {
-        V3 wp[3];
-        bool visible = true;
-        float depth = 0.0f;
+    // --------------------------------------------------------
+    void addMeshTriangles(const Object& o) {
+        const V3 camPos = { player.x, 1.55f, player.z };
+        const float fogR = 111, fogG = 177, fogB = 225;
 
-        for (int k = 0; k < 3; k++) {
-            V3 p = o.mesh->p[o.mesh->idx[i+k]];
-            p = { p.x*o.scale.x, p.y*o.scale.y, p.z*o.scale.z };
-            p = rotateY(p, o.yaw);
-            wp[k] = add(o.pos, p);
-        }
+        for (size_t i = 0; i + 2 < o.mesh->idx.size(); i += 3) {
+            V3 wp[3];
+            bool visible = true;
+            float depth = 0.0f;
 
-        V3 e1 = sub(wp[1], wp[0]);
-        V3 e2 = sub(wp[2], wp[0]);
-        V3 nrm = cross(e1, e2);
-        V3 viewDir = sub(camPos, wp[0]);
-        if (dot(nrm, viewDir) <= 0.0f) continue;
-
-        float ndl = dot(norm(nrm), norm({0.4f, 1.0f, 0.3f}));
-        float lum = 0.55f + 0.45f * std::max(0.0f, ndl);
-
-        SDL_Vertex verts3[3];
-        for (int k = 0; k < 3; k++) {
-            V3 rel = sub(wp[k], camPos);
-            V3 cam = rotateY(rel, camCosYaw, camSinYaw);
-
-            float yy =  cam.y*camCosPitch - cam.z*camSinPitch;
-            float zz =  cam.y*camSinPitch + cam.z*camCosPitch;
-            float xx =  cam.x;
-
-            if (zz < NEAR_Z) { visible = false; break; }
-
-            float sx = SW*0.5f + xx * FOV_FOCAL / zz;
-            float sy = SH*0.5f - yy * FOV_FOCAL / zz;
-
-            if (sx < -2000 || sx > SW+2000 || sy < -2000 || sy > SH+2000) {
-                visible = false; break;
+            for (int k = 0; k < 3; k++) {
+                V3 p = o.mesh->p[o.mesh->idx[i+k]];
+                p = { p.x*o.scale.x, p.y*o.scale.y, p.z*o.scale.z };
+                p = rotateY(p, o.yaw);
+                wp[k] = add(o.pos, p);
             }
 
-            float fog = std::clamp((zz - FOG_START) / (FOG_END - FOG_START),
-                                   0.0f, 1.0f);
+            V3 e1 = sub(wp[1], wp[0]);
+            V3 e2 = sub(wp[2], wp[0]);
+            V3 nrm = cross(e1, e2);
+            V3 viewDir = sub(camPos, wp[0]);
+            if (dot(nrm, viewDir) <= 0.0f) continue;
 
-            Uint8 cr = (Uint8)(o.color.r * lum * (1-fog) + fogR * fog);
-            Uint8 cg = (Uint8)(o.color.g * lum * (1-fog) + fogG * fog);
-            Uint8 cb = (Uint8)(o.color.b * lum * (1-fog) + fogB * fog);
+            float ndl = dot(norm(nrm), norm({0.4f, 1.0f, 0.3f}));
+            float lum = 0.55f + 0.45f * std::max(0.0f, ndl);
 
-            verts3[k].position  = { sx, sy };
-            verts3[k].tex_coord = { 0, 0 };
-            verts3[k].color     = { cr, cg, cb, o.color.a };
-            depth += zz;
-        }
+            SDL_Vertex verts3[3];
+            for (int k = 0; k < 3; k++) {
+                V3 rel = sub(wp[k], camPos);
+                V3 cam = rotateY(rel, camCosYaw, camSinYaw);
 
-        if (visible) {
-            tris.push_back({
-                { verts3[0], verts3[1], verts3[2] },
-                depth / 3.0f
-            });
+                float yy =  cam.y*camCosPitch - cam.z*camSinPitch;
+                float zz =  cam.y*camSinPitch + cam.z*camCosPitch;
+                float xx =  cam.x;
+
+                if (zz < NEAR_Z) { visible = false; break; }
+
+                float sx = SW*0.5f + xx * FOV_FOCAL / zz;
+                float sy = SH*0.5f - yy * FOV_FOCAL / zz;
+
+                if (sx < -2000 || sx > SW+2000 || sy < -2000 || sy > SH+2000) {
+                    visible = false; break;
+                }
+
+                float fog = std::clamp((zz - FOG_START) / (FOG_END - FOG_START),
+                                       0.0f, 1.0f);
+
+                Uint8 cr = (Uint8)(o.color.r * lum * (1-fog) + fogR * fog);
+                Uint8 cg = (Uint8)(o.color.g * lum * (1-fog) + fogG * fog);
+                Uint8 cb = (Uint8)(o.color.b * lum * (1-fog) + fogB * fog);
+
+                verts3[k].position  = { sx, sy };
+                verts3[k].tex_coord = { 0, 0 };
+                verts3[k].color     = { cr, cg, cb, o.color.a };
+                depth += zz;
+            }
+
+            if (visible) {
+                tris.push_back({
+                    { verts3[0], verts3[1], verts3[2] },
+                    depth / 3.0f
+                });
+            }
         }
     }
-}
-
 void drawZombie(const Zombie& z) {
     float bob = sinf(z.wobble) * 0.06f;
 
@@ -392,7 +390,6 @@ void drawAmmoBox(const AmmoBox& b) {
     Object o { &boxMesh, b.pos, {0.9f, 0.5f, 0.9f}, 0,
                {220, 200, 60, 255} };
     addMeshTriangles(o);
-    // Petit couvercle plus clair
     Object lid { &boxMesh, {b.pos.x, b.pos.y+0.28f, b.pos.z},
                  {0.95f, 0.08f, 0.95f}, 0, {255, 240, 120, 255} };
     addMeshTriangles(lid);
@@ -450,11 +447,9 @@ void drawWorld() {
     }
 }
 
-// --------------------------------------------------------
 void drawHud() {
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
 
-    // Coeurs
     for (int i = 0; i < 3; i++) {
         SDL_Rect r { 28 + i*42, 26, 30, 24 };
         SDL_SetRenderDrawColor(ren,
@@ -465,7 +460,6 @@ void drawHud() {
         SDL_RenderFillRect(ren, &r);
     }
 
-    // Barre de niveau
     SDL_SetRenderDrawColor(ren, 30, 30, 30, 200);
     SDL_Rect lbBg { 28, 62, 220, 18 };
     SDL_RenderFillRect(ren, &lbBg);
@@ -475,18 +469,15 @@ void drawHud() {
     SDL_Rect lb { 30, 64, (int)(216 * prog), 14 };
     SDL_RenderFillRect(ren, &lb);
 
-    // Balles restantes (barre jaune en haut à droite)
     int barW = std::min(400, ammo * 4);
     SDL_SetRenderDrawColor(ren, 255, 220, 60, 220);
     SDL_Rect tb { SW - 30 - barW, 26, barW, 12 };
     SDL_RenderFillRect(ren, &tb);
 
-    // Crosshair
     SDL_SetRenderDrawColor(ren, 255, 255, 255, 230);
     SDL_RenderDrawLine(ren, SW/2-10, SH/2, SW/2+10, SH/2);
     SDL_RenderDrawLine(ren, SW/2, SH/2-10, SW/2, SH/2+10);
 
-    // Flash de bouche (petit rond jaune clignotant)
     if (muzzleFlash > 0.0f) {
         SDL_SetRenderDrawColor(ren, 255, 240, 150,
             (Uint8)(muzzleFlash * 200));
@@ -494,14 +485,12 @@ void drawHud() {
         SDL_RenderFillRect(ren, &flash);
     }
 
-    // Dégâts
     if (hurt > 0.0f) {
         SDL_SetRenderDrawColor(ren, 180, 0, 0, (Uint8)(hurt*115.0f));
         SDL_Rect r {0,0,SW,SH};
         SDL_RenderFillRect(ren, &r);
     }
 
-    // Menus
     if (title || dead || paused) {
         SDL_SetRenderDrawColor(ren, 0, 0, 0, 175);
         SDL_Rect panel { SW/2-300, SH/2-100, 600, 200 };
@@ -515,15 +504,13 @@ void drawHud() {
         SDL_Rect inner { SW/2-165, SH/2+45, 330, 14 };
         SDL_RenderFillRect(ren, &inner);
     }
-}    // --------------------------------------------------------
-    // Tire : raycast vers le centre de l'écran
+}
     // --------------------------------------------------------
     void fireShot() {
         if (ammo <= 0) return;
         ammo--;
         muzzleFlash = 0.15f;
 
-        // Direction caméra (avant)
         V3 dir = {
             sinf(yaw) * cosf(pitch),
             -sinf(pitch),
@@ -532,15 +519,14 @@ void drawHud() {
 
         V3 camPos = { player.x, 1.55f, player.z };
 
-        // Cherche le zombie le plus aligné (produit scalaire max)
         Zombie* best = nullptr;
-        float bestDot = 0.985f; // tolérance d'angle
+        float bestDot = 0.985f;
 
         for (auto& z : zombies) {
             if (!z.alive) continue;
             V3 toZ = {
                 z.pos.x - camPos.x,
-                (z.pos.y + 1.0f) - camPos.y,   // centre du zombie
+                (z.pos.y + 1.0f) - camPos.y,
                 z.pos.z - camPos.z
             };
             float len = sqrtf(dot(toZ, toZ));
@@ -554,17 +540,13 @@ void drawHud() {
         }
 
         if (best) {
-            // Le zombie encaisse
-            int needed = ballsPerKill;
-            static int damageAccum = 0; // statique pour ce tir
-            damageAccum++;
-            if (damageAccum >= needed) {
-                damageAccum = 0;
+            shotPending++;
+            if (shotPending >= ballsPerKill) {
+                shotPending = 0;
                 best->alive = false;
                 kills++;
                 score += 100;
 
-                // Progression de niveau
                 if (kills % 5 == 0) {
                     level++;
                     if (level >= 3)      ballsPerKill = 1;
@@ -575,11 +557,9 @@ void drawHud() {
         }
     }
 
-    // --------------------------------------------------------
     void update(float dt, u64 kDown, u64 kHeld) {
         if (hurt > 0.0f)        hurt        = std::max(0.0f, hurt - dt);
         if (muzzleFlash > 0.0f) muzzleFlash = std::max(0.0f, muzzleFlash - dt);
-        if (shakeTimer > 0.0f)  shakeTimer  = std::max(0.0f, shakeTimer - dt);
 
         if (title) {
             if (kDown & HidNpadButton_A) title = false;
@@ -600,9 +580,6 @@ void drawHud() {
 
         timeAlive += dt;
 
-        // ----------------------------------------------------
-        // Sticks (corrigés : +y = stick poussé vers le haut)
-        // ----------------------------------------------------
         HidAnalogStickState left  = padGetStickPos(&pad, STICK_LEFT);
         HidAnalogStickState right = padGetStickPos(&pad, STICK_RIGHT);
 
@@ -621,22 +598,15 @@ void drawHud() {
         player.x = std::clamp(player.x + move.x, -MAP_LIMIT, MAP_LIMIT);
         player.z = std::clamp(player.z + move.z, -MAP_LIMIT, MAP_LIMIT);
 
-        // Caméra
-        yaw   += right.x / 32767.0f * 2.4f * dt;   // droite = regarder à droite
+        yaw   += right.x / 32767.0f * 2.4f * dt;
         pitch  = std::clamp(
             pitch - right.y / 32767.0f * 2.0f * dt,
             -1.48f, 1.48f);
 
-        // ----------------------------------------------------
-        // Tir (ZR ou A)
-        // ----------------------------------------------------
         if ((kDown & HidNpadButton_ZR) || (kDown & HidNpadButton_A)) {
             fireShot();
         }
 
-        // ----------------------------------------------------
-        // Ramassage munitions (distance < 1.2)
-        // ----------------------------------------------------
         for (auto& b : ammoBoxes) {
             if (b.taken) continue;
             float dx = b.pos.x - player.x;
@@ -647,10 +617,6 @@ void drawHud() {
             }
         }
 
-        // ----------------------------------------------------
-        // Vagues : plus le temps passe, plus il y a de zombies
-        // Cap à 40, spawn max 1 toutes les 1.5s
-        // ----------------------------------------------------
         static float spawnCooldown = 0.0f;
         spawnCooldown -= dt;
         int targetCount = 8 + (int)(timeAlive / 6.0f);
@@ -664,7 +630,6 @@ void drawHud() {
             spawnCooldown = 1.5f;
         }
 
-        // Nettoyage périodique des zombies morts
         if (zombies.size() > 60) {
             zombies.erase(
                 std::remove_if(zombies.begin(), zombies.end(),
@@ -672,9 +637,6 @@ void drawHud() {
                 zombies.end());
         }
 
-        // ----------------------------------------------------
-        // IA zombies (vitesse augmente avec le temps)
-        // ----------------------------------------------------
         float speedMul = 1.0f + std::min(1.5f, timeAlive / 60.0f);
 
         for (auto& z : zombies) {
@@ -708,8 +670,6 @@ void drawHud() {
                 if (z.cooldown <= 0.0f) {
                     hits++;
                     hurt = 0.65f;
-                    shakeTimer = 0.25f;
-                    shakeAmount = 6.0f;
                     z.cooldown = 1.25f;
                     if (hits >= 3) { dead = true; deadTimer = 2.0f; }
                 }
@@ -740,5 +700,50 @@ public:
 
         buildWorld();
 
-        printf("MIOZ ZOMBIE WORLD v3\n");
-        printf("L
+        printf("MIOZ ZOMBIE WORLD\n");
+        printf("L-stick: move | R-stick: camera\n");
+        printf("A / ZR: shoot | PLUS: pause | MINUS: restart\n");
+        return true;
+    }
+
+    void run() {
+        bool quit = false;
+        Uint64 last = SDL_GetPerformanceCounter();
+
+        while (appletMainLoop() && !quit) {
+            padUpdate(&pad);
+            u64 kDown = padGetButtonsDown(&pad);
+            u64 kHeld = padGetButtons(&pad);
+
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_QUIT) quit = true;
+            }
+
+            Uint64 now = SDL_GetPerformanceCounter();
+            float dt = (float)((double)(now - last) /
+                               SDL_GetPerformanceFrequency());
+            last = now;
+            dt = std::clamp(dt, 0.0f, 0.05f);
+
+            update(dt, kDown, kHeld);
+            drawWorld();
+            drawHud();
+            SDL_RenderPresent(ren);
+        }
+    }
+
+    ~Game() {
+        if (ren) SDL_DestroyRenderer(ren);
+        if (win) SDL_DestroyWindow(win);
+        SDL_Quit();
+    }
+};
+
+// ============================================================
+int main(int argc, char** argv) {
+    (void)argc; (void)argv;
+    Game game;
+    if (game.init()) game.run();
+    return 0;
+}
