@@ -7,8 +7,7 @@ jobs:
     container: devkitpro/devkita64:latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Force Docker Pull
+
         run: docker pull devkitpro/devkita64:latest
         
       - name: Compile
