@@ -7,9 +7,7 @@ jobs:
     container: devkitpro/devkita64:latest
     steps:
       - uses: actions/checkout@v4
-
-        run: docker pull devkitpro/devkita64:latest
-        
+      
       - name: Compile
         run: make
         
