@@ -4,8 +4,7 @@ on: [push, workflow_dispatch]
 jobs:
   build:
     runs-on: ubuntu-latest
-    # On force une version récente de l'image qui contient libnx >= 4.10.0
-    container: devkitpro/devkita64:20250315 
+    container: devkitpro/devkita64:latest
     steps:
       - uses: actions/checkout@v4
       
