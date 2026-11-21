@@ -139,7 +139,7 @@ private:
 
         for (int i = 0; i < 20; i++) clouds.push_back({ { (rand01()*2.0f-1.0f)*300.0f, 35.0f + rand01()*25.0f, (rand01()*2.0f-1.0f)*300.0f }, { 15.0f + rand01()*20.0f, 4.0f + rand01()*4.0f, 15.0f + rand01()*20.0f }, 1.0f + rand01()*2.0f });
         for (int i = 0; i < 10; i++) spawnOneZombie();
-}
+    }
 // --- FONCTION MAGIQUE POUR LE SOL INFINI ET LE CIEL ---
 void drawWorld() {
     camCosYaw = cosf(yaw); camSinYaw = sinf(yaw);
