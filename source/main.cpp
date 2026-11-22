@@ -481,8 +481,7 @@ bool Game::init() {
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (!renderer) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    padInitialize(&pad, HidNpadIdType_Handheld, HidNpadStyleTag_NpadHandheld);
-    initAudio();
+    padInitializeDefault(&pad);
     buildWorld();
     return true;
 }
