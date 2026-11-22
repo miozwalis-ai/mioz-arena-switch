@@ -865,17 +865,18 @@ void Game::respawn() {
 }
 
 // ------------------------------------------------------------
-// UPDATE JOUEUR
+// UPDATE JOUEUR (API libnx 4.0+ Pad)
 // ------------------------------------------------------------
 
 void Game::updatePlayer(float dt) {
-    hidScanInput();
+    // Mise à jour de l'état du Pad à chaque frame
+    padUpdate(&pad);
 
-    const u64 buttonsDown = hidKeysDown(CONTROLLER_P1_AUTO);
-    const u64 buttonsHeld = hidKeysHeld(CONTROLLER_P1_AUTO);
+    const u64 buttonsDown = padGetButtonsDown(&pad);
+    const u64 buttonsHeld = padGetButtonsHeld(&pad);
 
     if (titleScreen) {
-        if (buttonsDown & KEY_A) {
+        if (buttonsDown & HidNpadButton_A) {
             titleScreen = false;
             respawn();
         }
@@ -884,27 +885,28 @@ void Game::updatePlayer(float dt) {
 
     if (playerDead) {
         deathTimer += dt;
-        if ((buttonsDown & KEY_A) || deathTimer > 5.0f)
+        if ((buttonsDown & HidNpadButton_A) || deathTimer > 5.0f)
             respawn();
         return;
     }
 
-    if (buttonsDown & KEY_MINUS)
+    if (buttonsDown & HidNpadButton_Minus)
         paused = !paused;
 
     if (paused) {
-        if (buttonsDown & KEY_A)
+        if (buttonsDown & HidNpadButton_A)
             paused = false;
         return;
     }
 
-    if (buttonsDown & KEY_X)   interact();
-    if (buttonsDown & KEY_Y)   selectedWeapon = 1 - selectedWeapon;
-    if (buttonsDown & KEY_DUP)   selectedWeapon = 0;
-    if (buttonsDown & KEY_DDOWN) selectedWeapon = 1;
+    if (buttonsDown & HidNpadButton_X)   interact();
+    if (buttonsDown & HidNpadButton_Y)   selectedWeapon = 1 - selectedWeapon;
+    if (buttonsDown & HidNpadButton_Up)   selectedWeapon = 0;
+    if (buttonsDown & HidNpadButton_Down) selectedWeapon = 1;
 
-    HidAnalogStickState leftStick  = hidJoystickRead(CONTROLLER_P1_AUTO, JOYSTICK_LEFT);
-    HidAnalogStickState rightStick = hidJoystickRead(CONTROLLER_P1_AUTO, JOYSTICK_RIGHT);
+    // Lecture des sticks (0 = gauche, 1 = droit)
+    const HidAnalogStickState leftStick  = padGetStickPos(&pad, 0);
+    const HidAnalogStickState rightStick = padGetStickPos(&pad, 1);
 
     const float leftX  = clampf((float)leftStick.x  / 32767.0f, -1.0f, 1.0f);
     const float leftY  = clampf((float)leftStick.y  / 32767.0f, -1.0f, 1.0f);
@@ -945,7 +947,7 @@ void Game::updatePlayer(float dt) {
             playerPosition.z = candidate.z;
     }
 
-    if (buttonsHeld & KEY_ZR)
+    if (buttonsHeld & HidNpadButton_ZR)
         fireWeapon();
 
     collectAmmo();
@@ -1769,4 +1771,3 @@ int main(int argc, char** argv) {
     game.run();
     return 0;
 }
-
