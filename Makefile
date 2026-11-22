@@ -1,4 +1,3 @@
-
 .SUFFIXES:
 
 ifeq ($(strip $(DEVKITPRO)),)
@@ -12,6 +11,7 @@ TARGET      := mioz-arena-switch
 BUILD       := build
 SOURCES     := source
 DATA        :=
+ROMFS       := romfs
 INCLUDES    := include
 
 ARCH        := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
@@ -24,7 +24,7 @@ ASFLAGS     := -g $(ARCH)
 
 LDFLAGS     = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-LIBS        := `sdl2-config --libs`
+LIBS        := -lSDL2_mixer `sdl2-config --libs`
 LIBDIRS     := $(PORTLIBS) $(LIBNX)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
