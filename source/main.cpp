@@ -18,8 +18,7 @@ static constexpr float TWO_PI = PI * 2.0f;
 static constexpr float MAP_LIMIT = 98.0f;
 static constexpr float CAMERA_HEIGHT = 1.65f;
 static constexpr float CAMERA_FOCAL = 650.0f;
-static constexpr float NEAR_PLANE = 0.15f; // Augmenté un peu pour éviter les triangles collés à l'écran
-
+static constexpr float NEAR_PLANE = 0.15f;
 static constexpr float PLAYER_SPEED = 7.0f;
 static constexpr float ZOMBIE_SPEED = 2.25f;
 
@@ -73,12 +72,10 @@ static Mesh makeSphere(float radius = 1.0f, int rings = 8, int segments = 12) {
     return mesh;
 }
 
-struct Object { const Mesh* mesh = nullptr; V3 position; V3 scale{1.0f, 1.0f, 1.0f}; float yaw = 0.0f; V3 pivotOffset{0.0f, 0.0f, 0.0f}; Color color; };
+struct Object { const Mesh* mesh = nullptr; V3 position; V3 scale{1.0f, 1.0f, 1.0f}; float yaw = 0.0f; Color color; };
 struct Zombie { V3 position; float attackCooldown = 0.0f; float animationTime = 0.0f; float health = 100.0f; bool alive = true; };
 struct Projectile { V3 position; V3 velocity; float life = 2.0f; float damage = 25.0f; bool active = true; };
 struct Particle { V3 position; V3 velocity; Color color; float life = 0.5f; float size = 0.08f; };
-struct AmmoBox { V3 position; int amount = 20; bool active = true; };
-struct Cloud { V3 position; float scale = 1.0f; };
 
 static Mesh boxMesh = makeBox();
 static Mesh sphereMesh = makeSphere();
@@ -94,47 +91,29 @@ private:
     Uint32 wavLengthZombie = 0; Uint8* wavBufferZombie = nullptr;
     Uint32 wavLengthReload = 0; Uint8* wavBufferReload = nullptr;
 
-    V3 playerPosition{-12.0f, 0.0f, -1.0f};
+    V3 playerPosition{0.0f, 0.0f, 0.0f};
     float cameraYaw = 0.0f; float cameraPitch = 0.0f;
     float playerHealth = 100.0f; float hurtTimer = 0.0f;
     bool playerDead = false; float deathTimer = 0.0f;
     bool paused = false;
 
-    V3 homeSpawn{-12.0f, 0.0f, -1.0f};
-    bool homeDoorOpen = false; size_t homeDoorIndex = 0;
-
-    int selectedWeapon = 0; int pistolAmmo = 60; int rifleAmmo = 180;
-    float weaponCooldown = 0.0f; float muzzleFlash = 0.0f; float weaponRecoil = 0.0f;
+    int pistolAmmo = 100;
+    float weaponCooldown = 0.0f; float weaponRecoil = 0.0f; float muzzleFlash = 0.0f;
 
     RandomGenerator random;
     std::vector<Object> objects; std::vector<Zombie> zombies;
     std::vector<Projectile> projectiles; std::vector<Particle> particles;
-    std::vector<AmmoBox> ammoBoxes; std::vector<Cloud> clouds;
     std::vector<Tri> triangles;
 
-    int score = 0; int zombiesKilled = 0;
-
-    float randomRange(float minimum, float maximum) { return random.range(minimum, maximum); }
-    void addObject(const Mesh* mesh, V3 position, V3 scale, Color color, float yaw = 0.0f, V3 pivotOffset = v3(0.0f, 0.0f, 0.0f)) {
-        Object object; object.mesh = mesh; object.position = position; object.scale = scale; object.color = color; object.yaw = yaw; object.pivotOffset = pivotOffset; objects.push_back(object);
-    }
-    
     void buildWorld();
-    void buildGround();
-    void buildTrees();
-    void buildPlayerHouse();
-    void buildBossHouse();
     void addMeshTriangles(const Object& object, std::vector<Tri>& output);
     void drawWorld(); void drawZombie(const Zombie& zombie); void drawAllZombies();
-    void drawWeapon(); void drawHud(); void drawPauseScreen(); void drawDeathScreen();
+    void drawWeapon(); void drawHud();
     void update(float dt); void updatePlayer(float dt); void updateZombies(float dt);
     void updateProjectiles(float dt); void updateParticles(float dt);
-    void fireWeapon(); void spawnImpact(V3 position, Color color = Color{255, 220, 120, 255});
-    void respawn(); void interact(); void collectAmmo();
-    bool collidesWithWorld(V3 p); bool collidesWithHome(V3 p);
-
-    void initAudio();
-    void playSound(Uint8* wavBuffer, Uint32 wavLength);
+    void fireWeapon(); void spawnImpact(V3 position, Color color);
+    void initAudio(); void playSound(Uint8* wavBuffer, Uint32 wavLength);
+    bool collidesWithWorld(V3 p);
 
 public:
     Game();
@@ -143,142 +122,54 @@ public:
     ~Game();
 };
 
-static const Color COLOR_GRASS = {92, 155, 68, 255}; static const Color COLOR_GRASS_DARK = {75, 130, 55, 255};
-static const Color COLOR_DIRT = {125, 85, 55, 255}; static const Color COLOR_WOOD = {125, 82, 45, 255};
-static const Color COLOR_WOOD_LIGHT = {165, 115, 67, 255}; static const Color COLOR_STONE = {125, 125, 130, 255};
-static const Color COLOR_STONE_DARK = {85, 85, 90, 255}; static const Color COLOR_LEAVES = {48, 115, 45, 255};
-static const Color COLOR_LEAVES_DARK = {35, 88, 34, 255}; static const Color COLOR_ROOF = {125, 45, 38, 255};
-static const Color COLOR_WATER = {45, 125, 190, 210}; static const Color COLOR_BED = {180, 45, 45, 255};
-static const Color COLOR_WHITE = {225, 225, 220, 255};
-
+// --- CONSTRUCTION DU MONDE (SANS MAISON) ---
 void Game::buildWorld() {
-    objects.clear(); zombies.clear(); projectiles.clear(); particles.clear(); ammoBoxes.clear(); clouds.clear();
-    homeDoorOpen = false; homeDoorIndex = 0;
-    buildGround(); buildTrees(); buildPlayerHouse(); buildBossHouse();
-
-    for (int i = 0; i < 16; i++) {
-        float z = -55.0f + i * 7.0f; float x = 23.0f + std::sin(i * 0.55f) * 5.0f;
-        addObject(&boxMesh, {x, -0.12f, z}, {7.0f, 0.12f, 8.0f}, COLOR_WATER);
-        if (i % 2 == 0) {
-            addObject(&boxMesh, {x - 4.2f, 0.05f, z + 1.5f}, {1.2f, 0.25f, 1.0f}, COLOR_STONE);
-            addObject(&boxMesh, {x + 4.0f, 0.05f, z - 1.5f}, {1.0f, 0.25f, 1.2f}, COLOR_STONE_DARK);
-        }
-    }
-    for (int i = 0; i < 18; i++) {
-        Cloud cloud; cloud.position = { randomRange(-85.0f, 85.0f), randomRange(23.0f, 32.0f), randomRange(-85.0f, 85.0f) }; cloud.scale = randomRange(1.5f, 3.5f); clouds.push_back(cloud);
-        addObject(&boxMesh, cloud.position, {cloud.scale * 2.0f, 0.8f, cloud.scale}, {235, 239, 245, 255});
-        addObject(&boxMesh, {cloud.position.x - cloud.scale * 0.7f, cloud.position.y - 0.1f, cloud.position.z}, {cloud.scale, 0.7f, cloud.scale * 0.9f}, {245, 247, 250, 255});
-        addObject(&boxMesh, {cloud.position.x + cloud.scale * 0.7f, cloud.position.y - 0.1f, cloud.position.z}, {cloud.scale, 0.7f, cloud.scale * 0.9f}, {225, 231, 239, 255});
-    }
-    for (int i = 0; i < 12; i++) {
-        AmmoBox box; box.position = {randomRange(-65.0f, 65.0f), 0.5f, randomRange(-65.0f, 65.0f)}; box.active = true; ammoBoxes.push_back(box);
-    }
-    for (int i = 0; i < 18; i++) {
-        Zombie z; z.position = {randomRange(-65.0f, 65.0f), 0.0f, randomRange(-65.0f, 65.0f)};
-        if (distanceXZ(z.position, homeSpawn) < 18.0f) { z.position.x += 25.0f; z.position.z += 25.0f; }
-        z.health = 100.0f; z.alive = true; zombies.push_back(z);
-    }
-}
-
-void Game::buildGround() {
-    const float tileSize = 10.0f;
+    objects.clear(); zombies.clear(); projectiles.clear(); particles.clear();
+    
+    // Sol
     for (int x = -10; x < 10; x++) {
         for (int z = -10; z < 10; z++) {
-            Color grass = COLOR_GRASS; if (((x + z) % 3 + 3) % 3 == 0) grass = COLOR_GRASS_DARK;
-            float px = x * tileSize + tileSize * 0.5f; float pz = z * tileSize + tileSize * 0.5f;
-            addObject(&boxMesh, {px, -0.25f, pz}, {tileSize, 0.5f, tileSize}, grass);
+            Object o;
+            o.mesh = &boxMesh;
+            o.position = {x * 10.0f + 5.0f, -0.25f, z * 10.0f + 5.0f};
+            o.scale = {10.0f, 0.5f, 10.0f};
+            o.color = ((x + z) % 2 == 0) ? Color{92, 155, 68, 255} : Color{75, 130, 55, 255}; // Damier d'herbe
+            objects.push_back(o);
         }
     }
-}
 
-void Game::buildTrees() {
-    for (int i = 0; i < 52; i++) {
-        float x = randomRange(-90.0f, 90.0f); float z = randomRange(-90.0f, 90.0f);
-        if (distanceXZ({x, 0, z}, homeSpawn) < 11.0f || (x > 14.0f && x < 33.0f)) continue;
-        float height = randomRange(3.5f, 5.0f); float width = randomRange(1.0f, 1.6f);
-        addObject(&boxMesh, {x, height * 0.5f, z}, {0.65f, height, 0.65f}, COLOR_WOOD);
-        addObject(&boxMesh, {x, height + 0.9f, z}, {width * 2.3f, width * 1.8f, width * 2.3f}, COLOR_LEAVES);
+    // Arbres
+    for (int i = 0; i < 40; i++) {
+        float x = random.range(-80.0f, 80.0f); float z = random.range(-80.0f, 80.0f);
+        if (std::sqrt(x*x + z*z) < 15.0f) continue; // Laisse de la place autour du joueur
+        
+        Object trunk; trunk.mesh = &boxMesh; trunk.position = {x, 2.0f, z}; trunk.scale = {0.6f, 4.0f, 0.6f}; trunk.color = {125, 82, 45, 255}; objects.push_back(trunk);
+        Object leaves; leaves.mesh = &boxMesh; leaves.position = {x, 4.5f, z}; leaves.scale = {3.0f, 2.0f, 3.0f}; leaves.color = {48, 115, 45, 255}; objects.push_back(leaves);
     }
-}
 
-void Game::buildPlayerHouse() {
-    const float cx = -12.0f; const float cz = 0.0f;
-    addObject(&boxMesh, {cx, 0.0f, cz}, {8.0f, 0.35f, 8.0f}, COLOR_WOOD);
-    addObject(&boxMesh, {cx - 3.85f, 1.65f, cz}, {0.3f, 3.3f, 8.0f}, COLOR_WOOD_LIGHT);
-    addObject(&boxMesh, {cx + 3.85f, 1.65f, cz}, {0.3f, 3.3f, 8.0f}, COLOR_WOOD_LIGHT);
-    addObject(&boxMesh, {cx, 1.65f, cz - 3.85f}, {8.0f, 3.3f, 0.3f}, COLOR_WOOD);
-    addObject(&boxMesh, {cx - 2.6f, 1.65f, cz + 3.85f}, {2.8f, 3.3f, 0.3f}, COLOR_WOOD_LIGHT);
-    addObject(&boxMesh, {cx + 2.6f, 1.65f, cz + 3.85f}, {2.8f, 3.3f, 0.3f}, COLOR_WOOD_LIGHT);
-    addObject(&boxMesh, {cx, 2.75f, cz + 3.85f}, {2.4f, 1.1f, 0.3f}, COLOR_WOOD);
-    homeDoorIndex = objects.size();
-    addObject(&boxMesh, {cx, 1.1f, cz + 3.85f}, {1.9f, 2.2f, 0.18f}, {110, 70, 38, 255}, 0.0f, v3(-0.95f, 0.0f, 0.0f));
-    addObject(&boxMesh, {cx, 3.45f, cz}, {8.7f, 0.45f, 8.7f}, COLOR_ROOF);
-}
-
-void Game::buildBossHouse() {
-    const float cx = 80.0f; const float cz = 80.0f;
-    addObject(&boxMesh, {cx, 0.0f, cz}, {12.0f, 0.45f, 12.0f}, COLOR_STONE_DARK);
-    addObject(&boxMesh, {cx - 5.8f, 2.1f, cz}, {0.4f, 4.2f, 12.0f}, COLOR_STONE);
-    addObject(&boxMesh, {cx + 5.8f, 2.1f, cz}, {0.4f, 4.2f, 12.0f}, COLOR_STONE);
-    addObject(&boxMesh, {cx, 2.1f, cz - 5.8f}, {12.0f, 4.2f, 0.4f}, COLOR_STONE);
-    addObject(&boxMesh, {cx - 4.0f, 2.1f, cz + 5.8f}, {4.0f, 4.2f, 0.4f}, COLOR_STONE);
-    addObject(&boxMesh, {cx + 4.0f, 2.1f, cz + 5.8f}, {4.0f, 4.2f, 0.4f}, COLOR_STONE);
-    addObject(&boxMesh, {cx, 1.6f, cz + 5.8f}, {3.5f, 3.2f, 0.35f}, {55, 40, 35, 255});
-    addObject(&boxMesh, {cx, 4.4f, cz}, {12.8f, 0.5f, 12.8f}, COLOR_ROOF);
-}
-
-// --- LOGIQUE DU JOUEUR ---
-Game::Game() { playerPosition = homeSpawn; }
-
-bool Game::collidesWithHome(V3 p) {
-    const bool insideHouse = p.x > -15.45f && p.x < -8.55f && p.z > -3.45f && p.z < 3.45f;
-    if (insideHouse) return false;
-    const bool insideHouseBounds = p.x > -16.2f && p.x < -7.8f && p.z > -4.2f && p.z < 4.2f;
-    if (!insideHouseBounds) return false;
-    const bool insideDoorway = p.x > -12.95f && p.x < -11.05f && p.z > 3.15f && p.z < 5.1f;
-    if (homeDoorOpen && insideDoorway) return false;
-    return true;
+    // Zombies
+    for (int i = 0; i < 25; i++) {
+        Zombie z;
+        z.position = {random.range(-60.0f, 60.0f), 0.0f, random.range(-60.0f, 60.0f)};
+        if (std::sqrt(z.position.x*z.position.x + z.position.z*z.position.z) < 15.0f) { z.position.x += 25.0f; }
+        z.health = 100.0f; z.alive = true;
+        zombies.push_back(z);
+    }
 }
 
 bool Game::collidesWithWorld(V3 p) {
     if (p.x < -MAP_LIMIT + 1.0f || p.x > MAP_LIMIT - 1.0f || p.z < -MAP_LIMIT + 1.0f || p.z > MAP_LIMIT - 1.0f) return true;
-    if (collidesWithHome(p)) return true;
     return false;
 }
 
-void Game::interact() {
-    const V3 doorPosition = v3(-12.0f, 0.0f, 4.0f);
-    if (distanceXZ(playerPosition, doorPosition) > 3.2f) return;
-    homeDoorOpen = !homeDoorOpen;
-    if (homeDoorIndex < objects.size()) objects[homeDoorIndex].yaw = homeDoorOpen ? -1.35f : 0.0f;
-}
-
-void Game::collectAmmo() {
-    for (size_t i = 0; i < ammoBoxes.size(); ++i) {
-        AmmoBox& box = ammoBoxes[i]; if (!box.active) continue;
-        if (distanceXZ(playerPosition, box.position) < 1.35f) {
-            if (selectedWeapon == 0) pistolAmmo += box.amount; else rifleAmmo += box.amount;
-            box.active = false;
-            playSound(wavBufferReload, wavLengthReload);
-        }
-    }
-}
-
-void Game::respawn() { playerPosition = homeSpawn; playerHealth = 100.0f; playerDead = false; deathTimer = 0.0f; }
-
 void Game::updatePlayer(float dt) {
-    // --- CORRECTION DE LA MANETTE ICI ---
     padUpdate(&pad);
     const u64 buttonsDown = padGetButtonsDown(&pad);
     const u64 buttonsHeld = padGetButtons(&pad);
 
-    if (playerDead) { deathTimer += dt; if ((buttonsDown & HidNpadButton_A) || deathTimer > 5.0f) respawn(); return; }
+    if (playerDead) { deathTimer += dt; if ((buttonsDown & HidNpadButton_A) || deathTimer > 3.0f) { playerPosition = {0,0,0}; playerHealth = 100.0f; playerDead = false; } return; }
     if (buttonsDown & HidNpadButton_Minus) paused = !paused;
     if (paused) { if (buttonsDown & HidNpadButton_A) paused = false; return; }
-
-    // Test pour voir si le bouton A marche (ouvre la porte)
-    if (buttonsDown & HidNpadButton_A) interact(); 
-    if (buttonsDown & HidNpadButton_Y) selectedWeapon = 1 - selectedWeapon;
 
     const HidAnalogStickState leftStick = padGetStickPos(&pad, 0);
     const HidAnalogStickState rightStick = padGetStickPos(&pad, 1);
@@ -288,7 +179,8 @@ void Game::updatePlayer(float dt) {
     const float rightX = clampf((float)rightStick.x / 32767.0f, -1.0f, 1.0f);
     const float rightY = clampf((float)rightStick.y / 32767.0f, -1.0f, 1.0f);
 
-    cameraYaw += rightX * 2.4f * dt; cameraPitch -= rightY * 1.8f * dt;
+    cameraYaw += rightX * 2.4f * dt; 
+    cameraPitch -= rightY * 1.8f * dt;
     cameraPitch = clampf(cameraPitch, -0.85f, 0.85f);
 
     const float forwardX = std::sin(cameraYaw); const float forwardZ = std::cos(cameraYaw);
@@ -303,51 +195,56 @@ void Game::updatePlayer(float dt) {
         candidate = playerPosition; candidate.z += stepZ; if (!collidesWithWorld(candidate)) playerPosition.z = candidate.z;
     }
     if (buttonsHeld & HidNpadButton_ZR) fireWeapon();
-    collectAmmo();
 }
 
 void Game::update(float dt) {
     dt = clampf(dt, 0.0f, 0.05f); updatePlayer(dt); if (paused || playerDead) return;
-    if (weaponCooldown > 0.0f) weaponCooldown -= dt; if (muzzleFlash > 0.0f) muzzleFlash -= dt;
-    if (weaponRecoil > 0.0f) { weaponRecoil -= dt * 5.0f; if (weaponRecoil < 0.0f) weaponRecoil = 0.0f; }
+    if (weaponCooldown > 0.0f) weaponCooldown -= dt;
+    if (weaponRecoil > 0.0f) { weaponRecoil -= dt * 8.0f; if (weaponRecoil < 0.0f) weaponRecoil = 0.0f; }
+    if (muzzleFlash > 0.0f) muzzleFlash -= dt;
     if (hurtTimer > 0.0f) hurtTimer -= dt;
+    
     updateZombies(dt); updateProjectiles(dt); updateParticles(dt);
     if (playerHealth <= 0.0f) { playerHealth = 0.0f; playerDead = true; deathTimer = 0.0f; }
 }
 
 void Game::fireWeapon() {
     if (playerDead || paused || weaponCooldown > 0.0f) return;
-    int& ammunition = (selectedWeapon == 0) ? pistolAmmo : rifleAmmo;
-    if (ammunition <= 0) { weaponCooldown = 0.25f; return; }
-    --ammunition;
+    if (pistolAmmo <= 0) { weaponCooldown = 0.3f; return; }
+    
+    pistolAmmo--;
     playSound(wavBufferShot, wavLengthShot);
-    const float directionX = std::sin(cameraYaw) * std::cos(cameraPitch); const float directionY = std::sin(cameraPitch); const float directionZ = std::cos(cameraYaw) * std::cos(cameraPitch);
+
+    const float dirX = std::sin(cameraYaw) * std::cos(cameraPitch); 
+    const float dirY = std::sin(cameraPitch); 
+    const float dirZ = std::cos(cameraYaw) * std::cos(cameraPitch);
+    
     Projectile p; p.position = v3(playerPosition.x, playerPosition.y + CAMERA_HEIGHT, playerPosition.z);
-    p.velocity = v3(directionX * 34.0f, directionY * 34.0f, directionZ * 34.0f);
+    p.velocity = v3(dirX * 45.0f, dirY * 45.0f, dirZ * 45.0f);
     p.life = 2.0f; p.damage = 35.0f; p.active = true; projectiles.push_back(p);
-    weaponCooldown = (selectedWeapon == 0) ? 0.32f : 0.12f; muzzleFlash = 0.075f; weaponRecoil = 1.0f;
+    
+    weaponCooldown = 0.2f; weaponRecoil = 1.0f; muzzleFlash = 0.05f;
 }
 
 void Game::spawnImpact(V3 position, Color color) {
-    for (int i = 0; i < 8; ++i) { Particle p; p.position = position; p.velocity = v3(randomRange(-2.5f, 2.5f), randomRange(0.5f, 3.0f), randomRange(-2.5f, 2.5f)); p.color = color; particles.push_back(p); }
+    for (int i = 0; i < 5; ++i) { Particle p; p.position = position; p.velocity = v3(random.range(-3.0f, 3.0f), random.range(1.0f, 4.0f), random.range(-3.0f, 3.0f)); p.color = color; particles.push_back(p); }
 }
 
 void Game::updateZombies(float dt) {
-    for (Zombie& zombie : zombies) {
-        if (!zombie.alive) continue;
-        zombie.animationTime += dt; if (zombie.attackCooldown > 0.0f) zombie.attackCooldown -= dt;
-        const float distance = distanceXZ(playerPosition, zombie.position);
-        if (distance < 1.65f) {
-            if (zombie.attackCooldown <= 0.0f) { if (random.value() < 0.3f) playSound(wavBufferZombie, wavLengthZombie); playerHealth -= 9.0f; hurtTimer = 0.25f; zombie.attackCooldown = 1.0f; }
+    for (Zombie& z : zombies) {
+        if (!z.alive) continue;
+        z.animationTime += dt; if (z.attackCooldown > 0.0f) z.attackCooldown -= dt;
+        const float dist = distanceXZ(playerPosition, z.position);
+        
+        if (dist < 1.5f) {
+            if (z.attackCooldown <= 0.0f) { if (random.value() < 0.3f) playSound(wavBufferZombie, wavLengthZombie); playerHealth -= 10.0f; hurtTimer = 0.3f; z.attackCooldown = 1.0f; }
             continue;
         }
-        if (distance > 0.01f && distance < 100.0f) {
-            const float dx = playerPosition.x - zombie.position.x; const float dz = playerPosition.z - zombie.position.z;
-            const float invDistance = 1.0f / distance;
-            V3 candidate = zombie.position; candidate.x += dx * invDistance * ZOMBIE_SPEED * dt;
-            if (!collidesWithWorld(candidate)) zombie.position.x = candidate.x;
-            candidate = zombie.position; candidate.z += dz * invDistance * ZOMBIE_SPEED * dt;
-            if (!collidesWithWorld(candidate)) zombie.position.z = candidate.z;
+        if (dist < 80.0f) { // Les zombies te suivent
+            const float dx = playerPosition.x - z.position.x; const float dz = playerPosition.z - z.position.z;
+            const float inv = 1.0f / dist;
+            V3 cand = z.position; cand.x += dx * inv * ZOMBIE_SPEED * dt; if (!collidesWithWorld(cand)) z.position.x = cand.x;
+            cand = z.position; cand.z += dz * inv * ZOMBIE_SPEED * dt; if (!collidesWithWorld(cand)) z.position.z = cand.z;
         }
     }
 }
@@ -357,12 +254,13 @@ void Game::updateProjectiles(float dt) {
         if (!p.active) continue;
         p.position = add(p.position, mul(p.velocity, dt)); p.life -= dt;
         if (p.life <= 0.0f) { p.active = false; continue; }
-        for (Zombie& zombie : zombies) {
-            if (!zombie.alive) continue;
-            const V3 zc = v3(zombie.position.x, zombie.position.y + 1.0f, zombie.position.z);
-            if (std::sqrt(std::pow(p.position.x - zc.x, 2) + std::pow(p.position.y - zc.y, 2) + std::pow(p.position.z - zc.z, 2)) < 0.85f) {
-                zombie.health -= p.damage; p.active = false;
-                if (zombie.health <= 0.0f) { zombie.alive = false; score += 100; }
+        for (Zombie& z : zombies) {
+            if (!z.alive) continue;
+            const V3 zc = v3(z.position.x, z.position.y + 1.0f, z.position.z);
+            if (std::sqrt(std::pow(p.position.x - zc.x, 2) + std::pow(p.position.y - zc.y, 2) + std::pow(p.position.z - zc.z, 2)) < 0.9f) {
+                z.health -= p.damage; p.active = false;
+                spawnImpact(p.position, {255, 0, 0, 255});
+                if (z.health <= 0.0f) { z.alive = false; spawnImpact(zc, {80, 220, 100, 255}); }
                 break;
             }
         }
@@ -371,31 +269,26 @@ void Game::updateProjectiles(float dt) {
 }
 
 void Game::updateParticles(float dt) {
-    for (Particle& p : particles) { p.position = add(p.position, mul(p.velocity, dt)); p.life -= dt; }
+    for (Particle& p : particles) { p.position = add(p.position, mul(p.velocity, dt)); p.velocity.y -= 9.8f * dt; p.life -= dt; }
     particles.erase(std::remove_if(particles.begin(), particles.end(), [](const Particle& p) { return p.life <= 0.0f; }), particles.end());
 }
 
-// --- RENDU ET CORRECTION DES TRIANGLES ---
+// --- RENDU 3D ---
 void Game::addMeshTriangles(const Object& object, std::vector<Tri>& output) {
     if (!object.mesh) return;
     const Mesh& mesh = *object.mesh;
     const float cosYaw = std::cos(cameraYaw), sinYaw = std::sin(cameraYaw), cosPitch = std::cos(cameraPitch), sinPitch = std::sin(cameraPitch);
-    const float objectCos = std::cos(object.yaw), objectSin = std::sin(object.yaw);
     const float cx = playerPosition.x, cy = playerPosition.y + CAMERA_HEIGHT, cz = playerPosition.z;
     
     for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
         Tri tri{}; bool valid = true; float depthSum = 0.0f;
         for (int j = 0; j < 3; ++j) {
             V3 v = mesh.vertices[mesh.indices[i + j]];
-            v = sub(v, object.pivotOffset); v.x *= object.scale.x; v.y *= object.scale.y; v.z *= object.scale.z;
-            float rx = v.x * objectCos - v.z * objectSin; float rz = v.x * objectSin + v.z * objectCos;
-            v.x = rx; v.z = rz; v = add(v, object.pivotOffset); v = add(v, object.position);
+            v.x *= object.scale.x; v.y *= object.scale.y; v.z *= object.scale.z;
+            v = add(v, object.position);
             float dx = v.x - cx, dy = v.y - cy, dz = v.z - cz;
             float viewX = dx * cosYaw - dz * sinYaw, viewZ = dx * sinYaw + dz * cosYaw, viewY = dy * cosPitch - viewZ * sinPitch, finalZ = dy * sinPitch + viewZ * cosPitch;
-            
-            // CORRECTION ICI : On coupe net si c'est trop proche (NEAR_PLANE)
             if (finalZ < NEAR_PLANE) { valid = false; break; }
-            
             tri.v[j].position.x = (SCREEN_W * 0.5f) + (viewX * CAMERA_FOCAL / finalZ);
             tri.v[j].position.y = (SCREEN_H * 0.5f) - (viewY * CAMERA_FOCAL / finalZ);
             tri.v[j].color = {object.color.r, object.color.g, object.color.b, object.color.a};
@@ -408,49 +301,76 @@ void Game::addMeshTriangles(const Object& object, std::vector<Tri>& output) {
 void Game::drawWorld() {
     triangles.clear();
     for (const Object& o : objects) addMeshTriangles(o, triangles);
-    for (const AmmoBox& a : ammoBoxes) { if (!a.active) continue; Object o; o.mesh = &boxMesh; o.position = a.position; o.scale = v3(0.65f, 0.45f, 0.65f); o.color = {210, 170, 65, 255}; addMeshTriangles(o, triangles); }
-    for (const Projectile& p : projectiles) { if (!p.active) continue; Object o; o.mesh = &sphereMesh; o.position = p.position; o.scale = v3(0.09f, 0.09f, 0.09f); o.color = {255, 210, 90, 255}; addMeshTriangles(o, triangles); }
+    for (const Projectile& p : projectiles) { if (!p.active) continue; Object o; o.mesh = &sphereMesh; o.position = p.position; o.scale = v3(0.1f, 0.1f, 0.1f); o.color = {255, 210, 90, 255}; addMeshTriangles(o, triangles); }
     std::sort(triangles.begin(), triangles.end(), [](const Tri& a, const Tri& b) { return a.depth > b.depth; });
     for (const Tri& t : triangles) SDL_RenderGeometry(renderer, nullptr, t.v, 3, nullptr, 0);
 }
 
 void Game::drawZombie(const Zombie& z) {
-    const float animation = std::sin(z.animationTime * 5.0f) * 0.08f; const float walk = std::sin(z.animationTime * 7.0f) * 0.22f;
-    const Color green = {55, 135, 70, 255}; const Color dark = {35, 90, 48, 255}; const Color clothes = {50, 70, 135, 255};
-    Object body; body.mesh = &boxMesh; body.position = v3(z.position.x, z.position.y + 0.95f + animation, z.position.z); body.scale = v3(0.62f, 0.9f, 0.34f); body.color = clothes; addMeshTriangles(body, triangles);
-    Object head; head.mesh = &boxMesh; head.position = v3(z.position.x, z.position.y + 1.65f + animation, z.position.z); head.scale = v3(0.55f, 0.55f, 0.55f); head.color = green; addMeshTriangles(head, triangles);
-    Object lArm; lArm.mesh = &boxMesh; lArm.position = v3(z.position.x - 0.47f, z.position.y + 1.02f + walk, z.position.z); lArm.scale = v3(0.20f, 0.75f, 0.22f); lArm.color = green; addMeshTriangles(lArm, triangles);
-    Object rArm; rArm.mesh = &boxMesh; rArm.position = v3(z.position.x + 0.47f, z.position.y + 1.02f - walk, z.position.z); rArm.scale = v3(0.20f, 0.75f, 0.22f); rArm.color = green; addMeshTriangles(rArm, triangles);
-    Object lLeg; lLeg.mesh = &boxMesh; lLeg.position = v3(z.position.x - 0.17f, z.position.y + 0.30f - walk * 0.5f, z.position.z); lLeg.scale = v3(0.22f, 0.60f, 0.25f); lLeg.color = dark; addMeshTriangles(lLeg, triangles);
-    Object rLeg; rLeg.mesh = &boxMesh; rLeg.position = v3(z.position.x + 0.17f, z.position.y + 0.30f + walk * 0.5f, z.position.z); rLeg.scale = v3(0.22f, 0.60f, 0.25f); rLeg.color = dark; addMeshTriangles(rLeg, triangles);
+    const float anim = std::sin(z.animationTime * 5.0f) * 0.1f;
+    const Color c1 = {55, 135, 70, 255}, c2 = {35, 90, 48, 255};
+    Object body; body.mesh = &boxMesh; body.position = {z.position.x, 1.0f + anim, z.position.z}; body.scale = {0.8f, 1.2f, 0.5f}; body.color = {50, 70, 135, 255}; addMeshTriangles(body, triangles);
+    Object head; head.mesh = &boxMesh; head.position = {z.position.x, 1.9f + anim, z.position.z}; head.scale = {0.6f, 0.6f, 0.6f}; head.color = c1; addMeshTriangles(head, triangles);
+    Object armL; armL.mesh = &boxMesh; armL.position = {z.position.x - 0.5f, 1.2f, z.position.z}; armL.scale = {0.25f, 0.8f, 0.25f}; armL.color = c1; addMeshTriangles(armL, triangles);
+    Object armR; armR.mesh = &boxMesh; armR.position = {z.position.x + 0.5f, 1.2f, z.position.z}; armR.scale = {0.25f, 0.8f, 0.25f}; armR.color = c1; addMeshTriangles(armR, triangles);
 }
 
 void Game::drawAllZombies() {
-    for (const Zombie& z : zombies) if (z.alive && distanceXZ(playerPosition, z.position) < 115.0f) drawZombie(z);
+    for (const Zombie& z : zombies) if (z.alive && distanceXZ(playerPosition, z.position) < 100.0f) drawZombie(z);
     std::sort(triangles.begin(), triangles.end(), [](const Tri& a, const Tri& b) { return a.depth > b.depth; });
     for (const Tri& t : triangles) SDL_RenderGeometry(renderer, nullptr, t.v, 3, nullptr, 0);
 }
 
+// --- ARME ET HUD ---
 void Game::drawWeapon() {
     int cx = SCREEN_W / 2, cy = SCREEN_H / 2;
-    SDL_SetRenderDrawColor(renderer, 245, 245, 245, 230);
-    SDL_RenderDrawLine(renderer, cx - 9, cy, cx - 3, cy); SDL_RenderDrawLine(renderer, cx + 3, cy, cx + 9, cy);
-    SDL_RenderDrawLine(renderer, cx, cy - 9, cx, cy - 3); SDL_RenderDrawLine(renderer, cx, cy + 3, cx, cy + 9);
-    SDL_Rect wb = {cx + 95, SCREEN_H - 145 + (int)(weaponRecoil * 22.0f), 145, 55};
-    SDL_SetRenderDrawColor(renderer, 48, 48, 53, 255); SDL_RenderFillRect(renderer, &wb);
+    int recoil = (int)(weaponRecoil * 30.0f);
+    
+    // Viseur
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 200);
+    SDL_RenderDrawLine(renderer, cx - 15, cy, cx - 5, cy); SDL_RenderDrawLine(renderer, cx + 5, cy, cx + 15, cy);
+    SDL_RenderDrawLine(renderer, cx, cy - 15, cx, cy - 5); SDL_RenderDrawLine(renderer, cx, cy + 5, cx, cy + 15);
+
+    // Pistolet (Corps)
+    SDL_Rect body = {cx + 80, SCREEN_H - 200 + recoil, 160, 70};
+    SDL_SetRenderDrawColor(renderer, 60, 60, 65, 255); SDL_RenderFillRect(renderer, &body);
+    
+    // Canon
+    SDL_Rect barrel = {cx + 140, SCREEN_H - 210 + recoil, 100, 40};
+    SDL_SetRenderDrawColor(renderer, 40, 40, 45, 255); SDL_RenderFillRect(renderer, &barrel);
+    
+    // Crosse
+    SDL_Rect grip = {cx + 90, SCREEN_H - 140 + recoil, 50, 90};
+    SDL_SetRenderDrawColor(renderer, 80, 50, 30, 255); SDL_RenderFillRect(renderer, &grip);
+
+    // Flash (Quand on tire)
+    if (muzzleFlash > 0.0f) {
+        SDL_Rect flash = {cx + 230, SCREEN_H - 205 + recoil, 40, 30};
+        SDL_SetRenderDrawColor(renderer, 255, 220, 50, 255); SDL_RenderFillRect(renderer, &flash);
+    }
 }
 
 void Game::drawHud() {
-    SDL_Rect panel = {18, SCREEN_H - 108, 310, 88}; SDL_SetRenderDrawColor(renderer, 15, 20, 18, 210); SDL_RenderFillRect(renderer, &panel);
-    SDL_Rect health = {34, SCREEN_H - 82, (int)(230.0f * clampf(playerHealth / 100.0f, 0, 1)), 18}; SDL_SetRenderDrawColor(renderer, 65, 205, 80, 255); SDL_RenderFillRect(renderer, &health);
-    if (hurtTimer > 0.0f) { SDL_SetRenderDrawColor(renderer, 180, 20, 20, (Uint8)(hurtTimer * 400)); SDL_Rect dmg = {0, 0, SCREEN_W, SCREEN_H}; SDL_RenderFillRect(renderer, &dmg); }
+    SDL_Rect panel = {18, SCREEN_H - 80, 320, 60}; 
+    SDL_SetRenderDrawColor(renderer, 15, 20, 18, 210); SDL_RenderFillRect(renderer, &panel);
+    
+    SDL_Rect health = {34, SCREEN_H - 60, (int)(280.0f * clampf(playerHealth / 100.0f, 0, 1)), 20}; 
+    SDL_SetRenderDrawColor(renderer, 65, 205, 80, 255); SDL_RenderFillRect(renderer, &health);
+
+    // Munitions
+    SDL_Rect ammoBar = {SCREEN_W - 200, SCREEN_H - 60, (int)(170.0f * clampf((float)pistolAmmo / 100.0f, 0, 1)), 20};
+    SDL_SetRenderDrawColor(renderer, 210, 170, 65, 255); SDL_RenderFillRect(renderer, &ammoBar);
+
+    if (hurtTimer > 0.0f) { 
+        SDL_SetRenderDrawColor(renderer, 180, 20, 20, (Uint8)(hurtTimer * 400)); 
+        SDL_Rect dmg = {0, 0, SCREEN_W, SCREEN_H}; SDL_RenderFillRect(renderer, &dmg); 
+    }
 }
 
-void Game::drawPauseScreen() { SDL_SetRenderDrawColor(renderer, 0, 0, 0, 175); SDL_Rect ov = {0, 0, SCREEN_W, SCREEN_H}; SDL_RenderFillRect(renderer, &ov); }
-void Game::drawDeathScreen() { SDL_SetRenderDrawColor(renderer, 35, 0, 0, 190); SDL_Rect ov = {0, 0, SCREEN_W, SCREEN_H}; SDL_RenderFillRect(renderer, &ov); }
-
+// --- AUDIO ---
 static Uint8* loadWav(const char* path, Uint32* len) {
-    SDL_RWops* rw = SDL_RWFromFile(path, "rb"); if (!rw) return nullptr;
+    SDL_RWops* rw = SDL_RWFromFile(path, "rb"); 
+    if (!rw) return nullptr;
     SDL_AudioSpec spec; Uint8* buf = nullptr;
     if (SDL_LoadWAV_RW(rw, 1, &spec, &buf, len) == nullptr) return nullptr;
     return buf;
@@ -470,6 +390,9 @@ void Game::playSound(Uint8* buf, Uint32 len) {
     if (audioDevice != 0 && buf != nullptr && len > 0) SDL_QueueAudio(audioDevice, buf, len);
 }
 
+// --- INITIALISATION ---
+Game::Game() { playerPosition = {0.0f, 0.0f, 0.0f}; }
+
 bool Game::init() {
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO);
     window = SDL_CreateWindow("Mioz Arena", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_W, SCREEN_H, 0);
@@ -477,7 +400,6 @@ bool Game::init() {
     if (!renderer) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     
-    // Initialisation standard robuste (gère automatiquement le mode portable sur Switch)
     padInitializeDefault(&pad);
     
     initAudio();
@@ -491,10 +413,12 @@ void Game::run() {
         SDL_Event e; while (SDL_PollEvent(&e)) { if (e.type == SDL_QUIT) quit = true; }
         Uint64 curr = SDL_GetPerformanceCounter(); float dt = (float)((double)(curr - last) / SDL_GetPerformanceFrequency()); last = curr;
         update(dt);
+        
         SDL_SetRenderDrawColor(renderer, 105, 170, 220, 255); SDL_RenderClear(renderer);
         drawWorld(); drawAllZombies(); drawWeapon(); drawHud();
-        if (paused) drawPauseScreen(); 
-        if (playerDead) drawDeathScreen();
+        if (paused) { SDL_SetRenderDrawColor(renderer, 0, 0, 0, 180); SDL_Rect ov = {0, 0, SCREEN_W, SCREEN_H}; SDL_RenderFillRect(renderer, &ov); }
+        if (playerDead) { SDL_SetRenderDrawColor(renderer, 100, 0, 0, 200); SDL_Rect ov = {0, 0, SCREEN_W, SCREEN_H}; SDL_RenderFillRect(renderer, &ov); }
+        
         SDL_RenderPresent(renderer);
     }
 }
